@@ -513,23 +513,16 @@ function openAddEventModal(content, currentEvents, currentAttendance, currentSet
       <label>재해내용</label>
       <textarea id="e_content" rows="4" placeholder="재해 발생 경위를 입력하세요."></textarea>
       <label>재해자 상태</label>
-      <select id="e_status">
-        <option value="경상(현장조치)">경상(현장조치)</option>
-        <option value="통원치료">통원치료</option>
-        <option value="입원치료">입원치료</option>
-        <option value="중상">중상</option>
-        <option value="사망">사망</option>
-        <option value="기타">기타</option>
-      </select>
+      <input id="e_status" placeholder="예: 경상(현장조치 후 정상근무)" />
       <label>구급차 이용여부</label>
       <div class="row-flex" style="gap:20px; margin:2px 0 12px;">
         <label style="display:flex; align-items:center; gap:6px; margin:0; font-weight:400;"><input type="checkbox" id="e_amb_use" style="width:auto;" /> 이용</label>
         <label style="display:flex; align-items:center; gap:6px; margin:0; font-weight:400;"><input type="checkbox" id="e_amb_no" style="width:auto;" checked /> 미이용</label>
       </div>
       <label>재해자 조사</label>
-      <textarea id="e_victimInv" rows="3" placeholder="재해자 진술 및 조사 내용을 입력하세요."></textarea>
+      <input id="e_victimInv" placeholder="재해자 조사를 진행한 집행간부 성명" />
       <label>현장 조사</label>
-      <textarea id="e_siteInv" rows="3" placeholder="현장 조사 내용을 입력하세요."></textarea>
+      <input id="e_siteInv" placeholder="현장 조사를 진행한 집행간부 성명" />
       <div class="actions">
         <button class="ghost" id="e_cancel">취소</button>
         <button class="primary" id="e_save">저장</button>
