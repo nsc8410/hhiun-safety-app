@@ -366,7 +366,7 @@ document.querySelectorAll('.tabbtn').forEach(b => b.addEventListener('click', ()
 const TAB_META = {
   events: ['일일재해', '일일재해는 반드시 본인이 직접 작성합니다.'],
   participation: ['재해별 현황', '조건을 지정해 등록된 재해를 검색하고 상세 내용을 확인합니다.'],
-  aggregate: ['유형별 재해 집계', '기간을 지정해 재해자 상태(유형)별 발생 건수를 집계합니다.'],
+  aggregate: ['유형별 재해 집계', '기간을 지정해 재해 유형(사고 형태)별 발생 건수를 집계합니다.'],
   members: ['일일재해업로드', '과거 재해 이력이 정리된 엑셀 파일을 올리면 자동으로 일일재해 목록에 등록합니다.'],
   users: ['사용자 설정', 'GitHub 연결과 사용자 권한을 관리합니다.']
 };
@@ -492,7 +492,7 @@ function fmtAccidentAt(v) {
   return t ? `${d} ${t}` : d;
 }
 
-function openAddEventModal(content, currentEvents, currentAttendance, currentSettings) {
+function openAddEventModal(listEl, currentEvents, currentAttendance, currentSettings) {
   if (!requireToken()) return;
   const bg = document.createElement('div');
   bg.className = 'modal-bg';
@@ -512,6 +512,10 @@ function openAddEventModal(content, currentEvents, currentAttendance, currentSet
       <input id="e_place" placeholder="예: 3공장 도장라인" />
       <label>재해내용</label>
       <textarea id="e_content" rows="4" placeholder="재해 발생 경위를 입력하세요."></textarea>
+      <label>재해 유형(사고 형태)</label>
+      <select id="e_type">
+        ${ACCIDENT_TYPES.map(t => `<option value="${t}">${t}</option>`).join('')}
+      </select>
       <label>재해자 상태</label>
       <input id="e_status" placeholder="예: 경상(현장조치 후 정상근무)" />
       <label>구급차 이용여부</label>
@@ -535,6 +539,14 @@ function openAddEventModal(content, currentEvents, currentAttendance, currentSet
   ambUse.addEventListener('change', () => { if (ambUse.checked) ambNo.checked = false; else ambNo.checked = true; });
   ambNo.addEventListener('change', () => { if (ambNo.checked) ambUse.checked = false; else ambUse.checked = true; });
 
+  const contentInput = bg.querySelector('#e_content');
+  contentInput.addEventListener('blur', () => {
+    if (bg.querySelector('#e_type').dataset.touched) return;
+    const guess = guessAccidentType(contentInput.value);
+    if (guess) bg.querySelector('#e_type').value = guess;
+  });
+  bg.querySelector('#e_type').addEventListener('change', function () { this.dataset.touched = '1'; });
+
   bg.querySelector('#e_cancel').onclick = () => bg.remove();
   bg.querySelector('#e_save').onclick = async () => {
     const victimName = bg.querySelector('#e_victim').value.trim();
@@ -543,7 +555,8 @@ function openAddEventModal(content, currentEvents, currentAttendance, currentSet
     if (!accidentAt) return alert('재해 일자 및 시간을 선택하세요.');
     const department = bg.querySelector('#e_dept').value.trim();
     const location = bg.querySelector('#e_place').value.trim();
-    const content = bg.querySelector('#e_content').value.trim();
+    const contentText = bg.querySelector('#e_content').value.trim();
+    const accidentType = bg.querySelector('#e_type').value;
     const status = bg.querySelector('#e_status').value;
     const ambulance = ambUse.checked ? '이용' : '미이용';
     const victimInvestigation = bg.querySelector('#e_victimInv').value.trim();
@@ -552,7 +565,7 @@ function openAddEventModal(content, currentEvents, currentAttendance, currentSet
     saveBtn.disabled = true; saveBtn.textContent = '저장 중...';
     const newEvent = {
       id: genId('EV'), accidentAt, date: accidentAt.slice(0, 10),
-      victimName, department, location, content, status, ambulance,
+      victimName, department, location, content: contentText, accidentType, status, ambulance,
       victimInvestigation, siteInvestigation,
       regId: session.empId, regName: session.name, regAt: new Date().toISOString()
     };
@@ -561,8 +574,36 @@ function openAddEventModal(content, currentEvents, currentAttendance, currentSet
     if (!res.ok) { saveBtn.disabled = false; saveBtn.textContent = '저장'; return alert('저장 실패: ' + res.error); }
     bg.remove();
     // events.json만 바뀌었으므로 attendance/settings는 이미 있던 값을 그대로 재사용 (추가 조회 없음)
-    renderEvents(content, 0, { events: updatedEvents, attendance: currentAttendance, settings: currentSettings });
+    renderEvents(listEl, 0, { events: updatedEvents, attendance: currentAttendance, settings: currentSettings });
   };
+}
+
+// 재해발생형태 표준 분류(KOSHA 산업재해 형태 분류 기준 간략화)
+const ACCIDENT_TYPES = [
+  '떨어짐(추락)', '넘어짐', '부딪힘·충돌', '맞음(물체에 맞음)', '끼임',
+  '절단·베임·찔림', '화상', '감전', '폭발·파열', '무리한 동작(근골격계)',
+  '교통사고', '질식·중독', '기타', '미분류'
+];
+
+// 재해내용 텍스트에서 대략적인 재해 유형을 추정한다(최종 확인/수정은 등록자 몫).
+function guessAccidentType(text) {
+  const s = String(text || '');
+  const rules = [
+    [/떨어|추락|낙상/, '떨어짐(추락)'],
+    [/미끄러|넘어짐|전도|헛디뎌|걸려 넘어/, '넘어짐'],
+    [/부딪|충돌/, '부딪힘·충돌'],
+    [/맞음|낙하|비래|떨어진.*맞/, '맞음(물체에 맞음)'],
+    [/끼임|끼여|협착|물림/, '끼임'],
+    [/베임|절단|찔림|베인|절상|베어/, '절단·베임·찔림'],
+    [/화상|데임/, '화상'],
+    [/감전/, '감전'],
+    [/폭발|파열|터짐/, '폭발·파열'],
+    [/교통사고|오토바이|자전거.*충돌|차량/, '교통사고'],
+    [/질식|중독|가스/, '질식·중독'],
+    [/삐끗|염좌|무리한 동작|근육통/, '무리한 동작(근골격계)'],
+  ];
+  for (const [re, type] of rules) if (re.test(s)) return type;
+  return '';
 }
 
 function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
@@ -588,6 +629,7 @@ async function openEventDetail(id, content) {
     ['재해자 성명', ev.victimName || ev.name || ''],
     ['소속부서', ev.department || ''],
     ['재해장소', ev.location || ''],
+    ['재해 유형', ev.accidentType || guessAccidentType(ev.content) || '미분류'],
     ['재해자 상태', ev.status || ''],
     ['구급차 이용여부', ev.ambulance || ''],
   ];
@@ -612,14 +654,15 @@ async function openEventDetail(id, content) {
 // ============================================================
 async function renderParticipation(content, filters = null) {
   const events = await readJSON(PATHS.events, []);
-  const f = filters || { from: '', to: '', dept: '', status: '', amb: '' };
+  const f = filters || { from: '', to: '', dept: '', type: '', amb: '' };
+  const evType = ev => ev.accidentType || guessAccidentType(ev.content) || '미분류';
 
   let filtered = events.filter(ev => {
     const d = ev.date || (ev.accidentAt ? ev.accidentAt.slice(0, 10) : '');
     if (f.from && d < f.from) return false;
     if (f.to && d > f.to) return false;
     if (f.dept && !(ev.department || '').includes(f.dept)) return false;
-    if (f.status && !(ev.status || '').includes(f.status)) return false;
+    if (f.type && evType(ev) !== f.type) return false;
     if (f.amb && ev.ambulance !== f.amb) return false;
     return true;
   });
@@ -634,7 +677,12 @@ async function renderParticipation(content, filters = null) {
         <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">시작일</label><input type="date" id="pFrom" value="${f.from}" /></div>
         <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">종료일</label><input type="date" id="pTo" value="${f.to}" /></div>
         <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">소속부서</label><input id="pDept" placeholder="예: 건조3부" value="${esc(f.dept)}" /></div>
-        <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">재해자 상태</label><input id="pStatus" placeholder="예: 통증" value="${esc(f.status)}" /></div>
+        <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">재해 유형</label>
+          <select id="pType">
+            <option value="">전체</option>
+            ${ACCIDENT_TYPES.map(t => `<option value="${t}" ${f.type === t ? 'selected' : ''}>${t}</option>`).join('')}
+          </select>
+        </div>
         <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">구급차</label>
           <select id="pAmb">
             <option value="" ${f.amb === '' ? 'selected' : ''}>전체</option>
@@ -651,14 +699,14 @@ async function renderParticipation(content, filters = null) {
       <div id="pList" style="margin-top:14px;">
         ${filtered.length === 0 ? '<div class="empty">조건에 맞는 재해가 없습니다.</div>' : `
         <table>
-          <tr><th>일시</th><th>재해자</th><th>소속부서</th><th>장소</th><th>재해자 상태</th><th>구급차</th></tr>
+          <tr><th>일시</th><th>재해자</th><th>소속부서</th><th>장소</th><th>재해 유형</th><th>구급차</th></tr>
           ${filtered.slice(0, 300).map(ev => `
             <tr class="link" data-open="${ev.id}">
               <td>${fmtAccidentAt(ev.accidentAt) || ev.date || ''}</td>
               <td>${esc(ev.victimName || ev.name)}</td>
               <td>${esc(ev.department)}</td>
               <td>${esc(ev.location)}</td>
-              <td>${esc(ev.status)}</td>
+              <td>${esc(evType(ev))}</td>
               <td>${ev.ambulance ? esc(ev.ambulance) : '-'}</td>
             </tr>`).join('')}
         </table>
@@ -668,11 +716,11 @@ async function renderParticipation(content, filters = null) {
 
   const collect = () => ({
     from: document.getElementById('pFrom').value, to: document.getElementById('pTo').value,
-    dept: document.getElementById('pDept').value.trim(), status: document.getElementById('pStatus').value.trim(),
+    dept: document.getElementById('pDept').value.trim(), type: document.getElementById('pType').value,
     amb: document.getElementById('pAmb').value
   });
   document.getElementById('pSearchBtn').onclick = () => renderParticipation(content, collect());
-  ['pDept', 'pStatus'].forEach(id => document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') renderParticipation(content, collect()); }));
+  document.getElementById('pDept').addEventListener('keydown', e => { if (e.key === 'Enter') renderParticipation(content, collect()); });
   content.querySelectorAll('#pList [data-open]').forEach(el => {
     el.addEventListener('click', () => openEventDetail(el.dataset.open, content));
   });
@@ -687,7 +735,7 @@ async function renderAggregate(content) {
   content.innerHTML = `
     <div class="card">
       <div style="font-weight:700; font-size:15px;">기간 전체 집계</div>
-      <div style="font-size:12.5px; color:#888; margin-bottom:14px;">기간을 지정하면, 그 기간에 등록된 재해를 재해자 상태(유형)별로 건수를 집계합니다.</div>
+      <div style="font-size:12.5px; color:#888; margin-bottom:14px;">기간을 지정하면, 그 기간에 등록된 재해를 재해 유형(사고 형태)별로 건수를 집계합니다. 반복되는 사고 유형을 파악해 예방 대책에 활용하세요.</div>
       <div class="row-flex" style="flex-wrap:wrap;">
         <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">시작일</label><input type="date" id="agFrom" value="${monthAgo}" /></div>
         <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">종료일</label><input type="date" id="agTo" value="${today}" /></div>
@@ -707,7 +755,7 @@ async function renderAggregate(content) {
     });
     const typeMap = new Map();
     inRange.forEach(e => {
-      const t = (e.status || '').trim() || '미기재';
+      const t = e.accidentType || guessAccidentType(e.content) || '미분류';
       typeMap.set(t, (typeMap.get(t) || 0) + 1);
     });
     const types = Array.from(typeMap.entries()).map(([status, count]) => ({ status, count }))
@@ -795,7 +843,7 @@ async function exportAggregateExcel(data) {
   ws1.addRow([]);
   styleTitleRow(ws1.getRow(1));
   const ws1HeaderRowNum = 4;
-  ws1.getRow(ws1HeaderRowNum).values = ['재해자 상태(유형)', '건수', '비율(%)'];
+  ws1.getRow(ws1HeaderRowNum).values = ['재해 유형(사고 형태)', '건수', '비율(%)'];
   data.types.forEach(t => ws1.addRow([t.status, t.count, data.total ? Math.round((t.count / data.total) * 1000) / 10 : 0]));
   styleHeaderRow(ws1.getRow(ws1HeaderRowNum));
   ws1.autoFilter = { from: { row: ws1HeaderRowNum, column: 1 }, to: { row: ws1HeaderRowNum, column: 3 } };
@@ -806,12 +854,14 @@ async function exportAggregateExcel(data) {
   const ws2 = wb.addWorksheet('재해 상세 목록');
   ws2.columns = [
     { header: '재해 일자 및 시간', key: 'at' }, { header: '재해자', key: 'victim' }, { header: '소속부서', key: 'dept' },
-    { header: '재해장소', key: 'place' }, { header: '재해내용', key: 'content' }, { header: '재해자 상태', key: 'status' },
+    { header: '재해장소', key: 'place' }, { header: '재해내용', key: 'content' }, { header: '재해 유형', key: 'type' },
+    { header: '재해자 상태', key: 'status' },
     { header: '구급차', key: 'amb' }, { header: '재해자 조사', key: 'vi' }, { header: '현장 조사', key: 'si' }
   ];
   sortedEvents.forEach(e => ws2.addRow({
     at: fmtAccidentAt(e.accidentAt) || e.date || '', victim: e.victimName || e.name || '', dept: e.department || '',
-    place: e.location || '', content: e.content || '', status: e.status || '', amb: e.ambulance || '',
+    place: e.location || '', content: e.content || '', type: e.accidentType || guessAccidentType(e.content) || '미분류',
+    status: e.status || '', amb: e.ambulance || '',
     vi: e.victimInvestigation || '', si: e.siteInvestigation || ''
   }));
   styleHeaderRow(ws2.getRow(1));
@@ -896,10 +946,11 @@ function parseAccidentRows(rows, fallbackYear) {
     const y = year || new Date().getFullYear();
     const accidentAt = `${y}-${pad(month)}-${pad(day)}T${pad(hour)}:${pad(minute)}`;
 
+    const contentText = get('content');
     records.push({
       id: genId('EV'), accidentAt, date: accidentAt.slice(0, 10),
       victimName: victim, department: get('dept'), location: get('place'),
-      content: get('content'), status: get('status'),
+      content: contentText, accidentType: guessAccidentType(contentText) || '미분류', status: get('status'),
       ambulance: '', // 원본 파일의 "이용/미이용" 체크는 도형(빈 네모 칸)으로만 표시돼 있어 자동으로 읽어낼 수 없음
       victimInvestigation: get('victimInv'), siteInvestigation: get('siteInv'),
       regId: session.empId, regName: session.name, regAt: new Date().toISOString(),
@@ -920,7 +971,8 @@ async function renderMembers(content) {
       <input type="file" id="accFile" accept=".xls,.xlsx" multiple style="display:none" />
       <button class="primary" id="accUploadBtn">📤 엑셀 업로드</button>
       <div id="accResult" style="font-size:12.5px; margin-top:12px;"></div>
-      <div class="notice">구급차 이용여부는 원본 양식이 빈 체크박스 도형이라 자동으로 판단할 수 없어 비워둔 채로 등록됩니다. 필요하면 "일일재해" 목록에서 해당 건을 열어 개별로 확인해주세요.</div>
+      <div class="notice">구급차 이용여부는 원본 양식이 빈 체크박스 도형이라 자동으로 판단할 수 없어 비워둔 채로 등록됩니다. 재해 유형(사고 형태)은 재해내용 문장을 바탕으로 자동 추정되며, 100% 정확하지 않을 수 있으니 "유형별 재해 집계"를 확인하실 때 참고해주세요. 필요하면 "일일재해" 목록에서 해당 건을 열어 개별로 확인해주세요.</div>
+      <div class="notice">참고: 재해자 상태(부상 부위/증상)는 사람마다 표현이 제각각이라 통계로 묶이지 않습니다. 사고 유형별 통계는 "유형별 재해 집계" 화면에서, 문장 그대로의 상태는 "일일재해"·"재해별 현황"의 상세보기에서 확인하시면 됩니다.</div>
     </div>`;
 
   document.getElementById('accUploadBtn').onclick = () => { if (requireToken()) document.getElementById('accFile').click(); };
