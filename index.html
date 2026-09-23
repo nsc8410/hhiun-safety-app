@@ -16,7 +16,8 @@
   button.danger { background:#fdeaea; color:#c62828; }
   button.icon { padding:5px 10px; font-size:12px; }
   button:disabled { opacity:.5; cursor:not-allowed; }
-  input, select { padding:9px; border:1px solid #d5d9e0; border-radius:7px; font-size:13px; }
+  input, select, textarea { padding:9px; border:1px solid #d5d9e0; border-radius:7px; font-size:13px; font-family:inherit; }
+  textarea { resize:vertical; }
   table { border-collapse:collapse; width:100%; background:#fff; font-size:13px; }
   th, td { padding:9px 12px; border-bottom:1px solid #edf0f4; text-align:left; white-space:nowrap; }
   th { background:#2f4f8f; color:#fff; font-weight:600; }
@@ -29,8 +30,9 @@
   .badge.none { background:#f1f1f1; color:#888; }
   .modal-bg { position:fixed; inset:0; background:rgba(0,0,0,0.4); display:flex; align-items:center; justify-content:center; z-index:50; padding:16px; }
   .modal { background:#fff; border-radius:12px; padding:22px; width:400px; max-width:100%; max-height:90vh; overflow:auto; }
+  .modal.wide { width:520px; }
   .modal label { font-size:12px; font-weight:700; display:block; margin:10px 0 4px; }
-  .modal input, .modal select { width:100%; }
+  .modal input, .modal select, .modal textarea { width:100%; }
   .modal .actions { display:flex; gap:8px; margin-top:16px; }
   .modal .actions button { flex:1; }
   .empty { color:#999; text-align:center; padding:30px; }
@@ -406,9 +408,7 @@ async function renderEvents(content, offset = 0, preset = null) {
   const [events, attendance, settings] = preset ? [preset.events, preset.attendance, preset.settings] : await Promise.all([
     readJSON(PATHS.events, []), readJSON(PATHS.attendance, []), readJSON(PATHS.settings, { rate: 15000 })
   ]);
-  events.sort((a, b) => b.date.localeCompare(a.date) || String(b.id).localeCompare(String(a.id)));
-  const countMap = {};
-  attendance.forEach(a => { countMap[a.eventId] = (countMap[a.eventId] || 0) + 1; });
+  events.sort((a, b) => String(b.accidentAt || b.date || '').localeCompare(String(a.accidentAt || a.date || '')) || String(b.id).localeCompare(String(a.id)));
   const totalPages = Math.max(1, Math.ceil(events.length / EVENTS_PAGE_SIZE));
   const curPage = Math.floor(offset / EVENTS_PAGE_SIZE);
   const page = events.slice(offset, offset + EVENTS_PAGE_SIZE);
@@ -422,18 +422,21 @@ async function renderEvents(content, offset = 0, preset = null) {
     </div>
     <div class="card">
       <div class="row-flex" style="justify-content:space-between; margin-bottom:14px;">
-        <div style="font-weight:700; font-size:15px;">일정</div>
+        <div style="font-weight:700; font-size:15px;">재해 목록</div>
       </div>
-      <div id="eventList">${page.length === 0 ? '<div class="empty">등록된 일정이 없습니다.</div>' :
+      <div id="eventList">${page.length === 0 ? '<div class="empty">등록된 재해가 없습니다.</div>' :
         page.map(ev => `
           <div style="padding:14px 0; border-top:1px solid #edf0f4;">
-            <div class="row-flex" style="justify-content:space-between;">
+            <div class="row-flex" style="justify-content:space-between; align-items:flex-start;">
               <div>
-                <div class="link" style="font-weight:700; font-size:14.5px;" data-open="${ev.id}">${ev.name}</div>
-                <div style="font-size:12px; color:#888; margin-top:3px;">${ev.date} · ${fmtHour(ev.start)}~${fmtHour(ev.end)} · ${ev.hours}시간 · 등록 ${ev.regName} (${ev.regId})</div>
+                <div class="row-flex" style="gap:8px;">
+                  <div class="link" style="font-weight:700; font-size:14.5px;" data-open="${ev.id}">${ev.victimName || ev.name || '(이름없음)'}</div>
+                  ${ev.status ? `<span class="badge ${ev.status === '사망' || ev.status === '중상' ? 'none' : 'full'}">${ev.status}</span>` : ''}
+                  ${ev.ambulance === '이용' ? '<span class="badge part">구급차 이용</span>' : ''}
+                </div>
+                <div style="font-size:12px; color:#888; margin-top:3px;">${fmtAccidentAt(ev.accidentAt) || ev.date || ''}${ev.department ? ' · ' + ev.department : ''}${ev.location ? ' · ' + ev.location : ''} · 등록 ${ev.regName} (${ev.regId})</div>
               </div>
               <div class="row-flex">
-                <span class="badge full">참석 ${countMap[ev.id] || 0}명</span>
                 ${isAdmin() ? `<button class="icon danger" data-del="${ev.id}">삭제</button>` : ''}
               </div>
             </div>
@@ -483,49 +486,85 @@ function hourOptions(selected) {
   return opts;
 }
 
+function fmtAccidentAt(v) {
+  if (!v) return '';
+  const [d, t] = String(v).split('T');
+  return t ? `${d} ${t}` : d;
+}
+
 function openAddEventModal(content, currentEvents, currentAttendance, currentSettings) {
   if (!requireToken()) return;
   const bg = document.createElement('div');
   bg.className = 'modal-bg';
-  const today = new Date().toISOString().slice(0, 10);
+  const now = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const nowLocal = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
   bg.innerHTML = `
-    <div class="modal">
+    <div class="modal wide">
       <h3 style="margin-top:0;">일일재해등록</h3>
-      <label>행사명</label><input id="e_name" placeholder="예: 2026년 09월 16일 전조합원 7시간 부분파업(오전)" />
-      <label>날짜</label><input id="e_date" type="date" value="${today}" />
-      <div class="row-flex">
-        <div style="flex:1;"><label>시작시각</label><select id="e_start">${hourOptions(8)}</select></div>
-        <div style="flex:1;"><label>종료시각</label><select id="e_end">${hourOptions(12)}</select></div>
+      <label>재해 일자 및 시간</label>
+      <input id="e_at" type="datetime-local" value="${nowLocal}" />
+      <label>재해자 성명</label>
+      <input id="e_victim" placeholder="예: 홍길동" />
+      <label>소속부서</label>
+      <input id="e_dept" placeholder="예: 생산1부" />
+      <label>재해장소</label>
+      <input id="e_place" placeholder="예: 3공장 도장라인" />
+      <label>재해내용</label>
+      <textarea id="e_content" rows="4" placeholder="재해 발생 경위를 입력하세요."></textarea>
+      <label>재해자 상태</label>
+      <select id="e_status">
+        <option value="경상(현장조치)">경상(현장조치)</option>
+        <option value="통원치료">통원치료</option>
+        <option value="입원치료">입원치료</option>
+        <option value="중상">중상</option>
+        <option value="사망">사망</option>
+        <option value="기타">기타</option>
+      </select>
+      <label>구급차 이용여부</label>
+      <div class="row-flex" style="gap:20px; margin:2px 0 12px;">
+        <label style="display:flex; align-items:center; gap:6px; margin:0; font-weight:400;"><input type="checkbox" id="e_amb_use" style="width:auto;" /> 이용</label>
+        <label style="display:flex; align-items:center; gap:6px; margin:0; font-weight:400;"><input type="checkbox" id="e_amb_no" style="width:auto;" checked /> 미이용</label>
       </div>
-      <div class="notice" id="e_hoursPreview"></div>
+      <label>재해자 조사</label>
+      <textarea id="e_victimInv" rows="3" placeholder="재해자 진술 및 조사 내용을 입력하세요."></textarea>
+      <label>현장 조사</label>
+      <textarea id="e_siteInv" rows="3" placeholder="현장 조사 내용을 입력하세요."></textarea>
       <div class="actions">
         <button class="ghost" id="e_cancel">취소</button>
         <button class="primary" id="e_save">저장</button>
       </div>
     </div>`;
   document.body.appendChild(bg);
-  const preview = () => {
-    const s = Number(bg.querySelector('#e_start').value), e = Number(bg.querySelector('#e_end').value);
-    bg.querySelector('#e_hoursPreview').textContent = `참여시간: ${computeHours(s, e)}시간 (점심시간 12~13시는 자동으로 제외됩니다)`;
-  };
-  bg.querySelector('#e_start').addEventListener('change', preview);
-  bg.querySelector('#e_end').addEventListener('change', preview);
-  preview();
+
+  const ambUse = bg.querySelector('#e_amb_use');
+  const ambNo = bg.querySelector('#e_amb_no');
+  ambUse.addEventListener('change', () => { if (ambUse.checked) ambNo.checked = false; else ambNo.checked = true; });
+  ambNo.addEventListener('change', () => { if (ambNo.checked) ambUse.checked = false; else ambUse.checked = true; });
+
   bg.querySelector('#e_cancel').onclick = () => bg.remove();
   bg.querySelector('#e_save').onclick = async () => {
-    const name = bg.querySelector('#e_name').value.trim();
-    if (!name) return alert('행사명을 입력하세요.');
-    const date = bg.querySelector('#e_date').value;
-    const start = Number(bg.querySelector('#e_start').value);
-    const end = Number(bg.querySelector('#e_end').value);
+    const victimName = bg.querySelector('#e_victim').value.trim();
+    if (!victimName) return alert('재해자 성명을 입력하세요.');
+    const accidentAt = bg.querySelector('#e_at').value;
+    if (!accidentAt) return alert('재해 일자 및 시간을 선택하세요.');
+    const department = bg.querySelector('#e_dept').value.trim();
+    const location = bg.querySelector('#e_place').value.trim();
+    const content = bg.querySelector('#e_content').value.trim();
+    const status = bg.querySelector('#e_status').value;
+    const ambulance = ambUse.checked ? '이용' : '미이용';
+    const victimInvestigation = bg.querySelector('#e_victimInv').value.trim();
+    const siteInvestigation = bg.querySelector('#e_siteInv').value.trim();
     const saveBtn = bg.querySelector('#e_save');
     saveBtn.disabled = true; saveBtn.textContent = '저장 중...';
     const newEvent = {
-      id: genId('EV'), name, date, start, end, hours: computeHours(start, end),
+      id: genId('EV'), accidentAt, date: accidentAt.slice(0, 10),
+      victimName, department, location, content, status, ambulance,
+      victimInvestigation, siteInvestigation,
       regId: session.empId, regName: session.name, regAt: new Date().toISOString()
     };
     const updatedEvents = [...currentEvents, newEvent];
-    const res = await commitFiles({ [PATHS.events]: updatedEvents }, `일정 등록: ${name}`);
+    const res = await commitFiles({ [PATHS.events]: updatedEvents }, `일일재해등록: ${victimName}`);
     if (!res.ok) { saveBtn.disabled = false; saveBtn.textContent = '저장'; return alert('저장 실패: ' + res.error); }
     bg.remove();
     // events.json만 바뀌었으므로 attendance/settings는 이미 있던 값을 그대로 재사용 (추가 조회 없음)
@@ -533,91 +572,46 @@ function openAddEventModal(content, currentEvents, currentAttendance, currentSet
   };
 }
 
+function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function nl2br(s) { return esc(s).replace(/\n/g, '<br/>'); }
+
 async function openEventDetail(id, content) {
   const bg = document.createElement('div');
   bg.className = 'modal-bg';
-  bg.innerHTML = `<div class="modal" style="width:560px;"><div class="empty">불러오는 중...</div></div>`;
+  bg.innerHTML = `<div class="modal wide"><div class="empty">불러오는 중...</div></div>`;
   document.body.appendChild(bg);
-  const events = await readJSON(PATHS.events, []);
-  let attendance = await readJSON(PATHS.attendance, []);
-  const settings = await readJSON(PATHS.settings, { rate: 15000 });
+  const [events, attendance, settings] = await Promise.all([
+    readJSON(PATHS.events, []), readJSON(PATHS.attendance, []), readJSON(PATHS.settings, { rate: 15000 })
+  ]);
   const ev = events.find(x => x.id === id);
-  let count = attendance.filter(a => a.eventId === id).length;
+  if (!ev) {
+    bg.querySelector('.modal').innerHTML = `<div class="empty">해당 기록을 찾을 수 없습니다.</div>
+      <div class="actions"><button class="ghost" id="e_close" style="flex:1;">닫기</button></div>`;
+    bg.querySelector('#e_close').onclick = () => bg.remove();
+    return;
+  }
+  const rows = [
+    ['재해 일자 및 시간', fmtAccidentAt(ev.accidentAt) || ev.date || ''],
+    ['재해자 성명', ev.victimName || ev.name || ''],
+    ['소속부서', ev.department || ''],
+    ['재해장소', ev.location || ''],
+    ['재해자 상태', ev.status || ''],
+    ['구급차 이용여부', ev.ambulance || ''],
+  ];
   bg.querySelector('.modal').innerHTML = `
-    <h3 style="margin-top:0;">${ev ? ev.name : ''}</h3>
-    <div style="font-size:12.5px; color:#888; margin-bottom:12px;" id="e_meta">${ev ? `${ev.date} · ${fmtHour(ev.start)}~${fmtHour(ev.end)} · ${ev.hours}시간 · 참석 ${count}명` : ''}</div>
-    <input type="file" id="attFile" accept=".xls,.xlsx" style="display:none" />
-    <button class="ghost" id="attUploadBtn">📤 참석자 명단 업로드 (사번 목록 엑셀)</button>
-    <div id="uploadResult" style="font-size:12.5px; margin-top:8px;"></div>
-    <hr style="border:none; border-top:1px solid #edf0f4; margin:16px 0;" />
-    <label>누락된 인원 개별 추가 (사번, 여러 명은 쉼표/공백으로 구분)</label>
-    <div class="row-flex">
-      <input id="manualIds" placeholder="예: 2101069, 2202036" style="flex:1;" />
-      <button class="primary" id="manualAddBtn">추가</button>
-    </div>
-    <div id="manualResult" style="font-size:12.5px; margin-top:8px;"></div>
+    <h3 style="margin-top:0;">${esc(ev.victimName || ev.name || '재해 상세')}</h3>
+    <table style="margin-bottom:14px;">
+      ${rows.map(([k, v]) => `<tr><th style="width:120px; background:#f7f9fc; color:#333;">${k}</th><td>${esc(v) || '-'}</td></tr>`).join('')}
+    </table>
+    <label>재해내용</label>
+    <div class="notice">${nl2br(ev.content) || '-'}</div>
+    <label>재해자 조사</label>
+    <div class="notice">${nl2br(ev.victimInvestigation) || '-'}</div>
+    <label>현장 조사</label>
+    <div class="notice">${nl2br(ev.siteInvestigation) || '-'}</div>
+    <div style="font-size:12px; color:#888; margin-top:14px;">등록 ${esc(ev.regName)} (${esc(ev.regId)}) · ${ev.regAt ? new Date(ev.regAt).toLocaleString() : ''}</div>
     <div class="actions"><button class="ghost" id="e_close" style="flex:1;">닫기</button></div>`;
   bg.querySelector('#e_close').onclick = () => { bg.remove(); renderEvents(content, 0, { events, attendance, settings }); };
-
-  async function applyNewAttendees(empIds, resDiv, busyBtn, busyLabel, idleLabel) {
-    busyBtn.disabled = true;
-    busyBtn.textContent = busyLabel;
-    resDiv.textContent = '';
-    const members = await readJSON(PATHS.members, []);
-    const memberMap = new Map(members.map(m => [String(m.empId).trim().toUpperCase(), m]));
-    const existingSet = new Set(attendance.filter(a => a.eventId === id).map(a => String(a.empId).trim().toUpperCase()));
-    let matched = 0, duplicated = 0;
-    const unmatched = [];
-    const newRecords = [];
-    empIds.forEach(rawId => {
-      const key = String(rawId).trim().toUpperCase();
-      if (!key) return;
-      if (existingSet.has(key)) { duplicated++; return; }
-      const m = memberMap.get(key);
-      if (!m) { unmatched.push(rawId); return; }
-      newRecords.push({ id: genId('AT'), eventId: id, empId: m.empId, name: m.name, at: new Date().toISOString() });
-      existingSet.add(key);
-      matched++;
-    });
-    if (newRecords.length === 0) {
-      resDiv.textContent = `추가된 인원 없음 (중복 ${duplicated}건, 미매칭 ${unmatched.length}건)`;
-      busyBtn.disabled = false; busyBtn.textContent = idleLabel;
-      return;
-    }
-    const updatedAttendance = [...attendance, ...newRecords];
-    const res = await commitFiles({ [PATHS.attendance]: updatedAttendance }, `출석자 추가: ${id} (+${matched}명)`);
-    busyBtn.disabled = false; busyBtn.textContent = idleLabel;
-    if (!res.ok) { resDiv.textContent = '저장 실패: ' + res.error; return; }
-    attendance = updatedAttendance;
-    count = attendance.filter(a => a.eventId === id).length;
-    bg.querySelector('#e_meta').textContent = ev ? `${ev.date} · ${fmtHour(ev.start)}~${fmtHour(ev.end)} · ${ev.hours}시간 · 참석 ${count}명` : '';
-    resDiv.innerHTML = `매칭 ${matched}명 등록${duplicated ? `, 중복 ${duplicated}건 제외` : ''}${unmatched.length ? `, 명단에 없는 사번 ${unmatched.length}건: ${unmatched.join(', ')}` : ''}`;
-  }
-
-  bg.querySelector('#manualAddBtn').onclick = async () => {
-    if (!requireToken()) return;
-    const raw = bg.querySelector('#manualIds').value;
-    const empIds = raw.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
-    if (empIds.length === 0) return alert('사번을 입력하세요.');
-    await applyNewAttendees(empIds, bg.querySelector('#manualResult'), bg.querySelector('#manualAddBtn'), '추가 중...', '추가');
-    bg.querySelector('#manualIds').value = '';
-  };
-
-  bg.querySelector('#attUploadBtn').onclick = () => {
-    if (!requireToken()) return;
-    bg.querySelector('#attFile').click();
-  };
-  bg.querySelector('#attFile').addEventListener('change', async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const buf = await file.arrayBuffer();
-    const wb = XLSX.read(buf, { type: 'array' });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
-    const empIds = rows.map(r => String(r[0] || '').trim()).filter(Boolean);
-    await applyNewAttendees(empIds, bg.querySelector('#uploadResult'), bg.querySelector('#attUploadBtn'), '⏳ 업로드 처리 중...', '📤 참석자 명단 업로드 (사번 목록 엑셀)');
-    e.target.value = '';
-  });
 }
 
 // ============================================================
