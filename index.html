@@ -365,10 +365,10 @@ document.querySelectorAll('.tabbtn').forEach(b => b.addEventListener('click', ()
 
 const TAB_META = {
   events: ['일일재해', '일일재해는 반드시 본인이 직접 작성합니다.'],
-  participation: ['재해별 현황', '최근 등록된 재해별 현황을 확인합니다.'],
-  aggregate: ['유형별 재해 집계', '기간을 지정해 재해 유형별 발생 건수를 집계합니다.'],
-  members: ['일일재해업로드', '사번은 정확일치, 이름은 앞글자부터 검색할 수 있습니다.'],
-  users: ['사용자 설정', 'GitHub 연결, 사용자 권한, 시간당 지급액을 관리합니다.']
+  participation: ['재해별 현황', '조건을 지정해 등록된 재해를 검색하고 상세 내용을 확인합니다.'],
+  aggregate: ['유형별 재해 집계', '기간을 지정해 재해자 상태(유형)별 발생 건수를 집계합니다.'],
+  members: ['일일재해업로드', '과거 재해 이력이 정리된 엑셀 파일을 올리면 자동으로 일일재해 목록에 등록합니다.'],
+  users: ['사용자 설정', 'GitHub 연결과 사용자 권한을 관리합니다.']
 };
 
 function goTab(tab) {
@@ -608,50 +608,90 @@ async function openEventDetail(id, content) {
 }
 
 // ============================================================
-// 참여 현황
+// 재해별 현황 (검색·필터로 개별 재해를 찾아보는 화면)
 // ============================================================
-async function renderParticipation(content) {
-  const [events, attendance] = await Promise.all([readJSON(PATHS.events, []), readJSON(PATHS.attendance, [])]);
-  if (events.length === 0) { content.innerHTML = '<div class="card empty">데이터가 없습니다.</div>'; return; }
-  const countMap = {};
-  attendance.forEach(a => { countMap[a.eventId] = (countMap[a.eventId] || 0) + 1; });
-  const sorted = [...events].sort((a, b) => a.date.localeCompare(b.date));
-  const last12 = sorted.slice(-12).map(e => ({ date: e.date, name: e.name, count: countMap[e.id] || 0 }));
-  const max = Math.max(...last12.map(i => i.count), 1);
+async function renderParticipation(content, filters = null) {
+  const events = await readJSON(PATHS.events, []);
+  const f = filters || { from: '', to: '', dept: '', status: '', amb: '' };
+
+  let filtered = events.filter(ev => {
+    const d = ev.date || (ev.accidentAt ? ev.accidentAt.slice(0, 10) : '');
+    if (f.from && d < f.from) return false;
+    if (f.to && d > f.to) return false;
+    if (f.dept && !(ev.department || '').includes(f.dept)) return false;
+    if (f.status && !(ev.status || '').includes(f.status)) return false;
+    if (f.amb && ev.ambulance !== f.amb) return false;
+    return true;
+  });
+  filtered.sort((a, b) => String(b.accidentAt || b.date || '').localeCompare(String(a.accidentAt || a.date || '')));
+  const ambCount = filtered.filter(e => e.ambulance === '이용').length;
+
   content.innerHTML = `
     <div class="card">
-      <div style="font-weight:700; font-size:15px; margin-bottom:2px;">최근 일정 참여 현황</div>
-      <div style="font-size:12.5px; color:#888; margin-bottom:20px;">최근 ${last12.length}개 일정의 참석 인원입니다.</div>
-      <div style="display:flex; align-items:flex-end; gap:16px; height:260px; border-bottom:2px solid #edf0f4; padding:0 10px;">
-        ${last12.map(i => `
-          <div style="flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%;">
-            <div style="font-weight:700; font-size:13px; margin-bottom:6px;">${i.count}</div>
-            <div style="width:70%; background:linear-gradient(#5b7fc7,#2f4f8f); border-radius:6px 6px 0 0; height:${Math.max((i.count / max) * 200, 4)}px;"></div>
-          </div>`).join('')}
+      <div style="font-weight:700; font-size:15px; margin-bottom:2px;">재해별 현황</div>
+      <div style="font-size:12.5px; color:#888; margin-bottom:14px;">조건을 지정해 등록된 재해를 찾아볼 수 있습니다. 행을 누르면 상세 내용을 볼 수 있습니다.</div>
+      <div class="row-flex" style="flex-wrap:wrap; gap:10px;">
+        <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">시작일</label><input type="date" id="pFrom" value="${f.from}" /></div>
+        <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">종료일</label><input type="date" id="pTo" value="${f.to}" /></div>
+        <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">소속부서</label><input id="pDept" placeholder="예: 건조3부" value="${esc(f.dept)}" /></div>
+        <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">재해자 상태</label><input id="pStatus" placeholder="예: 통증" value="${esc(f.status)}" /></div>
+        <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">구급차</label>
+          <select id="pAmb">
+            <option value="" ${f.amb === '' ? 'selected' : ''}>전체</option>
+            <option value="이용" ${f.amb === '이용' ? 'selected' : ''}>이용</option>
+            <option value="미이용" ${f.amb === '미이용' ? 'selected' : ''}>미이용</option>
+          </select>
+        </div>
+        <div style="align-self:flex-end;"><button class="primary" id="pSearchBtn">검색</button></div>
       </div>
-      <div style="display:flex; gap:16px; padding:10px 10px 0;">
-        ${last12.map(i => `<div style="flex:1; text-align:center; font-size:11.5px; color:#888;">${i.date}<br/><span style="font-size:10.5px;">${i.name}</span></div>`).join('')}
+      <div class="summary-grid" style="grid-template-columns:repeat(2,1fr); margin-top:16px;">
+        <div class="box"><b>검색된 재해</b><span>${filtered.length}건</span></div>
+        <div class="box"><b>구급차 이용</b><span>${ambCount}건</span></div>
+      </div>
+      <div id="pList" style="margin-top:14px;">
+        ${filtered.length === 0 ? '<div class="empty">조건에 맞는 재해가 없습니다.</div>' : `
+        <table>
+          <tr><th>일시</th><th>재해자</th><th>소속부서</th><th>장소</th><th>재해자 상태</th><th>구급차</th></tr>
+          ${filtered.slice(0, 300).map(ev => `
+            <tr class="link" data-open="${ev.id}">
+              <td>${fmtAccidentAt(ev.accidentAt) || ev.date || ''}</td>
+              <td>${esc(ev.victimName || ev.name)}</td>
+              <td>${esc(ev.department)}</td>
+              <td>${esc(ev.location)}</td>
+              <td>${esc(ev.status)}</td>
+              <td>${ev.ambulance ? esc(ev.ambulance) : '-'}</td>
+            </tr>`).join('')}
+        </table>
+        ${filtered.length > 300 ? `<div class="empty">검색 결과가 많아 최근 300건만 표시합니다. 조건을 더 좁혀보세요.</div>` : ''}`}
       </div>
     </div>`;
+
+  const collect = () => ({
+    from: document.getElementById('pFrom').value, to: document.getElementById('pTo').value,
+    dept: document.getElementById('pDept').value.trim(), status: document.getElementById('pStatus').value.trim(),
+    amb: document.getElementById('pAmb').value
+  });
+  document.getElementById('pSearchBtn').onclick = () => renderParticipation(content, collect());
+  ['pDept', 'pStatus'].forEach(id => document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') renderParticipation(content, collect()); }));
+  content.querySelectorAll('#pList [data-open]').forEach(el => {
+    el.addEventListener('click', () => openEventDetail(el.dataset.open, content));
+  });
 }
 
 // ============================================================
-// 전체 집계
+// 유형별 재해 집계
 // ============================================================
 async function renderAggregate(content) {
   const today = new Date().toISOString().slice(0, 10);
-  const monthAgo = new Date(Date.now() - 20 * 86400000).toISOString().slice(0, 10);
-  const settings = await readJSON(PATHS.settings, { rate: 15000 });
+  const monthAgo = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
   content.innerHTML = `
     <div class="card">
       <div style="font-weight:700; font-size:15px;">기간 전체 집계</div>
-      <div style="font-size:12.5px; color:#888; margin-bottom:14px;">예: 9월 1일~9월 27일 동안 참여한 모든 일정을 개인별로 합산합니다.</div>
+      <div style="font-size:12.5px; color:#888; margin-bottom:14px;">기간을 지정하면, 그 기간에 등록된 재해를 재해자 상태(유형)별로 건수를 집계합니다.</div>
       <div class="row-flex" style="flex-wrap:wrap;">
         <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">시작일</label><input type="date" id="agFrom" value="${monthAgo}" /></div>
         <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">종료일</label><input type="date" id="agTo" value="${today}" /></div>
-        <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">지급일</label><input type="date" id="agPayDate" /></div>
       </div>
-      <div class="notice">시간당 지급액: ${Number(settings.rate).toLocaleString()}원 · 각 일정의 저장된 참여시간을 합산하여 총 지급액을 계산합니다.</div>
       <div class="row-flex" style="margin-top:14px;">
         <button class="primary" id="agRunBtn">전체 집계 조회</button>
         <button class="ghost" id="agExportBtn">전체 집계 엑셀 출력</button>
@@ -659,99 +699,60 @@ async function renderAggregate(content) {
       <div id="agResult" style="margin-top:18px;"></div>
     </div>`;
 
-  let lastData = null;
   async function runAggregate(dateFrom, dateTo) {
-    const [events, attendance, members] = await Promise.all([
-      readJSON(PATHS.events, []), readJSON(PATHS.attendance, []), readJSON(PATHS.members, [])
-    ]);
-    const inRange = events.filter(e => e.date >= dateFrom && e.date <= dateTo);
-    const eventIds = new Set(inRange.map(e => e.id));
-    const eventMap = new Map(inRange.map(e => [e.id, e]));
-    const memberMap = new Map(members.map(m => [String(m.empId).trim().toUpperCase(), m]));
-    const rate = settings.rate;
-
-    const perPerson = new Map();
-    attendance.filter(a => eventIds.has(a.eventId)).forEach(a => {
-      const key = String(a.empId).trim().toUpperCase();
-      const ev = eventMap.get(a.eventId);
-      if (!perPerson.has(key)) {
-        const m = memberMap.get(key) || {};
-        perPerson.set(key, {
-          group: m.group || '', empId: a.empId, name: a.name || m.name, dept: m.dept || '',
-          phone: m.phone || '', bank: m.bank || '', account: m.account || '', holder: m.holder || '',
-          count: 0, hours: 0, records: []
-        });
-      }
-      const p = perPerson.get(key);
-      p.count++; p.hours += Number(ev.hours) || 0;
-      p.records.push({ date: ev.date, start: ev.start, end: ev.end, hours: ev.hours });
+    const events = await readJSON(PATHS.events, []);
+    const inRange = events.filter(e => {
+      const d = e.date || (e.accidentAt ? e.accidentAt.slice(0, 10) : '');
+      return d >= dateFrom && d <= dateTo;
     });
-    const people = Array.from(perPerson.values()).map(p => ({
-      ...p,
-      pay: Math.round(p.hours * rate),
-      records: [...p.records].sort((a, b) => a.date.localeCompare(b.date) || a.start - b.start)
-    }));
-    const groupMap = new Map();
-    people.forEach(p => {
-      const g = p.group || '미지정';
-      if (!groupMap.has(g)) groupMap.set(g, { group: g, peopleCount: 0, recordCount: 0, hours: 0, pay: 0 });
-      const gg = groupMap.get(g);
-      gg.peopleCount++; gg.recordCount += p.count; gg.hours += p.hours; gg.pay += p.pay;
+    const typeMap = new Map();
+    inRange.forEach(e => {
+      const t = (e.status || '').trim() || '미기재';
+      typeMap.set(t, (typeMap.get(t) || 0) + 1);
     });
+    const types = Array.from(typeMap.entries()).map(([status, count]) => ({ status, count }))
+      .sort((a, b) => b.count - a.count);
     return {
-      dateFrom, dateTo, rate, eventCount: inRange.length, peopleCount: people.length,
-      recordCount: attendance.filter(a => eventIds.has(a.eventId)).length,
-      totalHours: people.reduce((s, p) => s + p.hours, 0), totalPay: people.reduce((s, p) => s + p.pay, 0),
-      people, groups: Array.from(groupMap.values())
+      dateFrom, dateTo, events: inRange, types,
+      total: inRange.length,
+      ambCount: inRange.filter(e => e.ambulance === '이용').length
     };
   }
 
   document.getElementById('agRunBtn').onclick = async () => {
     const dateFrom = document.getElementById('agFrom').value;
     const dateTo = document.getElementById('agTo').value;
-    lastData = await runAggregate(dateFrom, dateTo);
+    const data = await runAggregate(dateFrom, dateTo);
+    const max = Math.max(...data.types.map(t => t.count), 1);
     document.getElementById('agResult').innerHTML = `
       <div style="font-weight:700; font-size:14.5px; margin-bottom:4px;">${dateFrom} ~ ${dateTo} 집계 완료</div>
-      <div class="summary-grid">
-        <div class="box"><b>일정</b><span>${lastData.eventCount}건</span></div>
-        <div class="box"><b>참여 인원</b><span>${lastData.peopleCount}명</span></div>
-        <div class="box"><b>참여 건수</b><span>${lastData.recordCount}건</span></div>
-        <div class="box"><b>총 참여시간</b><span>${lastData.totalHours}시간</span></div>
-        <div class="box"><b>예상 지급액</b><span>${lastData.totalPay.toLocaleString()}원</span></div>
+      <div class="summary-grid" style="grid-template-columns:repeat(3,1fr);">
+        <div class="box"><b>총 재해 건수</b><span>${data.total}건</span></div>
+        <div class="box"><b>구급차 이용</b><span>${data.ambCount}건</span></div>
+        <div class="box"><b>유형 수</b><span>${data.types.length}종</span></div>
+      </div>
+      <div style="margin-top:16px;">
+        ${data.types.length === 0 ? '<div class="empty">해당 기간에 등록된 재해가 없습니다.</div>' : data.types.map(t => `
+          <div style="margin-bottom:10px;">
+            <div class="row-flex" style="justify-content:space-between; font-size:13px; margin-bottom:3px;">
+              <span>${esc(t.status)}</span><span style="font-weight:700;">${t.count}건</span>
+            </div>
+            <div style="background:#edf0f4; border-radius:6px; height:10px;">
+              <div style="background:#2f4f8f; border-radius:6px; height:10px; width:${Math.max((t.count / max) * 100, 4)}%;"></div>
+            </div>
+          </div>`).join('')}
       </div>`;
-  };
-  document.getElementById('agExportBtn').onclick = async () => {
-    const btn = document.getElementById('agExportBtn');
-    const dateFrom = document.getElementById('agFrom').value;
-    const dateTo = document.getElementById('agTo').value;
-    const payDate = document.getElementById('agPayDate').value;
-    btn.disabled = true; btn.textContent = '⏳ 파일 만드는 중...';
-    // 조회 시점에 캐시해둔 데이터를 재사용하지 않고, 출력 직전에 항상 다시 받아온다.
-    // (다른 사람이 방금 계좌정보 등을 수정했을 수 있으므로)
-    const data = await runAggregate(dateFrom, dateTo);
-    await exportAggregateExcel(data, payDate);
-    btn.disabled = false; btn.textContent = '전체 집계 엑셀 출력';
+    document.getElementById('agExportBtn').onclick = async () => {
+      const btn = document.getElementById('agExportBtn');
+      btn.disabled = true; btn.textContent = '⏳ 파일 만드는 중...';
+      const fresh = await runAggregate(dateFrom, dateTo);
+      await exportAggregateExcel(fresh);
+      btn.disabled = false; btn.textContent = '전체 집계 엑셀 출력';
+    };
   };
 }
 
 function dotDate(s) { return String(s || '').replace(/-/g, '.'); }
-// "2026-09-16" + 4시간 -> "9월 16일 4시간" (연도 생략, 시간대 대신 총 시간만)
-function simpleRecordStr(r) {
-  const [, mo, da] = r.date.split('-');
-  return `${Number(mo)}월 ${Number(da)}일 ${r.hours}H`;
-}
-
-// "1지단","2지단"... 처럼 앞에 숫자가 있으면 숫자 순으로, 없는 그룹(엔진분과, 해양분과 등)은 그 뒤에 가나다순으로.
-function groupSortKey(name) {
-  const m = String(name || '').match(/^(\d+)/);
-  return m ? [0, Number(m[1]), name] : [1, 0, name];
-}
-function compareGroup(a, b) {
-  const ka = groupSortKey(a), kb = groupSortKey(b);
-  if (ka[0] !== kb[0]) return ka[0] - kb[0];
-  if (ka[1] !== kb[1]) return ka[1] - kb[1];
-  return String(ka[2]).localeCompare(String(kb[2]), 'ko');
-}
 
 const HEADER_FILL = 'FF2F4F8F';
 const HEADER_FONT_COLOR = 'FFFFFFFF';
@@ -783,60 +784,41 @@ function autoFitColumns(ws, headerRowNumber) {
   });
 }
 
-async function exportAggregateExcel(data, payDate) {
+async function exportAggregateExcel(data) {
   const wb = new ExcelJS.Workbook();
-  const payDateLabel = payDate ? dotDate(payDate) : '';
-  const sortedPeople = [...data.people].sort((a, b) => compareGroup(a.group, b.group) || String(a.empId).localeCompare(String(b.empId)));
-  const sortedGroups = [...data.groups].sort((a, b) => compareGroup(a.group, b.group));
+  const sortedEvents = [...data.events].sort((a, b) => String(a.accidentAt || a.date || '').localeCompare(String(b.accidentAt || b.date || '')));
 
-  // ---------- 1) 기간별 개인 집계 ----------
-  const ws1 = wb.addWorksheet('기간별 개인 집계');
-  ws1.columns = [
-    { header: '지단/지회', key: 'group' }, { header: '사번', key: 'empId' }, { header: '성명', key: 'name' },
-    { header: '소속', key: 'dept' }, { header: '참여일수', key: 'count' }, { header: '총 참여시간', key: 'hours' },
-    { header: '시간당 지급액', key: 'rate' }, { header: '총 지급액', key: 'pay' },
-    { header: '참여일자 및 시간', key: 'records' }, { header: '휴대전화번호', key: 'phone' },
-    { header: '은행', key: 'bank' }, { header: '계좌번호', key: 'account' }
-  ];
-  sortedPeople.forEach(p => ws1.addRow({
-    group: p.group, empId: p.empId, name: p.name, dept: p.dept, count: p.count, hours: p.hours,
-    rate: data.rate, pay: p.pay,
-    records: p.records.map(r => simpleRecordStr(r)).join(', '),
-    phone: p.phone, bank: p.bank, account: p.account
-  }));
-  styleHeaderRow(ws1.getRow(1));
-  ws1.autoFilter = { from: 'A1', to: { row: 1, column: ws1.columns.length } };
-  ws1.getColumn('records').alignment = { wrapText: true, vertical: 'top' };
+  // ---------- 1) 유형별 집계 ----------
+  const ws1 = wb.addWorksheet('유형별 집계');
+  ws1.addRow(['유형별 재해 집계']);
+  ws1.addRow([`${dotDate(data.dateFrom)} ~ ${dotDate(data.dateTo)}`]);
+  ws1.addRow([]);
+  styleTitleRow(ws1.getRow(1));
+  const ws1HeaderRowNum = 4;
+  ws1.getRow(ws1HeaderRowNum).values = ['재해자 상태(유형)', '건수', '비율(%)'];
+  data.types.forEach(t => ws1.addRow([t.status, t.count, data.total ? Math.round((t.count / data.total) * 1000) / 10 : 0]));
+  styleHeaderRow(ws1.getRow(ws1HeaderRowNum));
+  ws1.autoFilter = { from: { row: ws1HeaderRowNum, column: 1 }, to: { row: ws1HeaderRowNum, column: 3 } };
   autoFitColumns(ws1);
-  ws1.views = [{ state: 'frozen', ySplit: 1 }];
+  ws1.views = [{ state: 'frozen', ySplit: ws1HeaderRowNum }];
 
-  // ---------- 2) 기간별 지단 집계 ----------
-  const ws2 = wb.addWorksheet('기간별 지단 집계');
-  ws2.addRow(['기간별 지단·지회 집계']);
-  ws2.addRow([`${dotDate(data.dateFrom)} ~ ${dotDate(data.dateTo)}`]);
-  ws2.addRow([]);
-  styleTitleRow(ws2.getRow(1));
-  const ws2HeaderRowNum = 4;
-  ws2.getRow(ws2HeaderRowNum).values = ['구분', '참여 인원', '참여 건수', '총 참여시간', '시간당 지급액', '총 지급액'];
-  sortedGroups.forEach(g => ws2.addRow([g.group, g.peopleCount, g.recordCount, g.hours, data.rate, g.pay]));
-  styleHeaderRow(ws2.getRow(ws2HeaderRowNum));
-  ws2.autoFilter = { from: { row: ws2HeaderRowNum, column: 1 }, to: { row: ws2HeaderRowNum, column: 6 } };
+  // ---------- 2) 재해 상세 목록 ----------
+  const ws2 = wb.addWorksheet('재해 상세 목록');
+  ws2.columns = [
+    { header: '재해 일자 및 시간', key: 'at' }, { header: '재해자', key: 'victim' }, { header: '소속부서', key: 'dept' },
+    { header: '재해장소', key: 'place' }, { header: '재해내용', key: 'content' }, { header: '재해자 상태', key: 'status' },
+    { header: '구급차', key: 'amb' }, { header: '재해자 조사', key: 'vi' }, { header: '현장 조사', key: 'si' }
+  ];
+  sortedEvents.forEach(e => ws2.addRow({
+    at: fmtAccidentAt(e.accidentAt) || e.date || '', victim: e.victimName || e.name || '', dept: e.department || '',
+    place: e.location || '', content: e.content || '', status: e.status || '', amb: e.ambulance || '',
+    vi: e.victimInvestigation || '', si: e.siteInvestigation || ''
+  }));
+  styleHeaderRow(ws2.getRow(1));
+  ws2.autoFilter = { from: 'A1', to: { row: 1, column: ws2.columns.length } };
+  ws2.getColumn('content').alignment = { wrapText: true, vertical: 'top' };
   autoFitColumns(ws2);
-  ws2.views = [{ state: 'frozen', ySplit: ws2HeaderRowNum }];
-
-  // ---------- 3) 문자발송용 ----------
-  const ws3 = wb.addWorksheet('문자발송용');
-  const ws3HeaderRowNum = 1;
-  ws3.getRow(ws3HeaderRowNum).values = ['휴대전화번호', '성함', '파업참여 날짜,시간', '파업참여 시간', '집행비용', '은행', '계좌번호', '지급 일자'];
-  sortedPeople.forEach(p => {
-    const dateTimeStr = p.records.map(r => simpleRecordStr(r)).join(', ');
-    ws3.addRow([p.phone, p.name, dateTimeStr, `총 ${p.hours}시간`, `${p.pay.toLocaleString()}원`, p.bank, p.account, payDateLabel]);
-  });
-  styleHeaderRow(ws3.getRow(ws3HeaderRowNum));
-  ws3.autoFilter = { from: { row: ws3HeaderRowNum, column: 1 }, to: { row: ws3HeaderRowNum, column: 8 } };
-  ws3.getColumn(3).alignment = { wrapText: true, vertical: 'top' };
-  autoFitColumns(ws3);
-  ws3.views = [{ state: 'frozen', ySplit: ws3HeaderRowNum }];
+  ws2.views = [{ state: 'frozen', ySplit: 1 }];
 
   const buf = await wb.xlsx.writeBuffer();
   const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
