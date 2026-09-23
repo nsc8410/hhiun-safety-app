@@ -419,12 +419,11 @@ async function renderEvents(content, offset = 0, preset = null) {
 
   content.innerHTML = `
     <div style="display:flex; justify-content:flex-end; margin-bottom:10px;">
-      ${isAdmin() ? '<button class="primary" id="addEventBtn">일정 등록</button>' : ''}
+      ${isAdmin() ? '<button class="primary" id="addEventBtn">일일재해등록</button>' : ''}
     </div>
     <div class="card">
       <div class="row-flex" style="justify-content:space-between; margin-bottom:14px;">
         <div style="font-weight:700; font-size:15px;">일정</div>
-        <div style="font-size:12.5px; color:#888;">현재 시간당 지급액: <b>${Number(settings.rate).toLocaleString()}원</b></div>
       </div>
       <div id="eventList">${page.length === 0 ? '<div class="empty">등록된 일정이 없습니다.</div>' :
         page.map(ev => `
@@ -492,7 +491,7 @@ function openAddEventModal(content, currentEvents, currentAttendance, currentSet
   const today = new Date().toISOString().slice(0, 10);
   bg.innerHTML = `
     <div class="modal">
-      <h3 style="margin-top:0;">일정 등록</h3>
+      <h3 style="margin-top:0;">일일재해등록</h3>
       <label>행사명</label><input id="e_name" placeholder="예: 2026년 09월 16일 전조합원 7시간 부분파업(오전)" />
       <label>날짜</label><input id="e_date" type="date" value="${today}" />
       <div class="row-flex">
