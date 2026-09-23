@@ -102,8 +102,8 @@
     <div id="pageDesc" style="color:#888; font-size:13px; margin-bottom:16px;"></div>
     <div class="row-flex" style="margin-bottom:16px; flex-wrap:wrap;">
       <button class="tabbtn ghost" data-tab="events">일일재해</button>
-      <button class="tabbtn ghost" data-tab="participation">재해현황</button>
-      <button class="tabbtn ghost" data-tab="aggregate">재해 총 집계</button>
+      <button class="tabbtn ghost" data-tab="participation">재해별 현황</button>
+      <button class="tabbtn ghost" data-tab="aggregate">유형별 재해 집계</button>
       <button class="tabbtn ghost" data-tab="members">일일재해업로드</button>
       <button class="tabbtn ghost" data-tab="users">사용자 설정</button>
     </div>
@@ -365,8 +365,8 @@ document.querySelectorAll('.tabbtn').forEach(b => b.addEventListener('click', ()
 
 const TAB_META = {
   events: ['일일재해', '일일재해는 반드시 본인이 직접 작성합니다.'],
-  participation: ['재해현황', '최근 일정별 참여 인원을 확인합니다.'],
-  aggregate: ['재해 총 집계', '기간을 지정해 개인별 참여시간과 지급액을 합산합니다.'],
+  participation: ['재해별 현황', '최근 등록된 재해별 현황을 확인합니다.'],
+  aggregate: ['유형별 재해 집계', '기간을 지정해 재해 유형별 발생 건수를 집계합니다.'],
   members: ['일일재해업로드', '사번은 정확일치, 이름은 앞글자부터 검색할 수 있습니다.'],
   users: ['사용자 설정', 'GitHub 연결, 사용자 권한, 시간당 지급액을 관리합니다.']
 };
