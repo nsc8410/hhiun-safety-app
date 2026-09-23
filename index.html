@@ -848,204 +848,143 @@ async function exportAggregateExcel(data, payDate) {
 }
 
 // ============================================================
-// 조합원 명단
+// 일일재해업로드 (과거 재해 이력 엑셀 일괄 업로드)
 // ============================================================
-async function renderMembers(content, offset = 0, q = '', presetAll = null) {
+
+// 엑셀에서 뽑아낸 헤더 셀 텍스트(개행/공백 제거)를 우리 필드로 매핑한다.
+// "24년_일일사고내용.xlsx" / "25년_일일재해현황.xlsx" / "26년_일일_재해현황.xlsx" 세 가지 양식을
+// 모두 자동으로 인식한다 (양식마다 열 구성이 조금씩 다르고, 한 시트 안에 월별로 표 헤더가 반복된다).
+function normHeaderCell(s) { return String(s == null ? '' : s).replace(/[\r\n\s]+/g, ''); }
+
+function detectAccidentColMap(normedCells) {
+  if (!normedCells.includes('재해자')) return null;
+  if (!(normedCells.includes('재해내용') || normedCells.some(c => c.includes('재해내용')))) return null;
+  const map = {};
+  normedCells.forEach((c, i) => {
+    if (c === '재해자') map.victim = i;
+    else if (c === '재해자상태') map.status = i;
+    else if (c === '재해자조사') map.victimInv = i;
+    else if (c === '현장조사') map.siteInv = i;
+    else if (c === '재해내용') map.content = i;
+    else if (c === '장소') map.place = i;
+    else if (c === '부서' && map.dept === undefined) map.dept = i; // 재해자 부서(첫 번째 부서열)만 사용, 목격자 부서열은 무시
+    else if (c.includes('앰블런스') || c.includes('구급차')) map.ambulance = i;
+    else if (c.includes('재해일자') || (c.includes('날짜') && c.includes('시간'))) map.date = i;
+  });
+  return map;
+}
+
+// 한 시트(2차원 배열)에서 재해 기록들을 뽑아낸다. 시트 안에 월별로 "◈ 일일 재해자 사고 내용 ◈" 제목과
+// 헤더 행이 반복해서 나오므로, 헤더를 볼 때마다 열 매핑을 다시 잡고 그 사이의 데이터 행들을 읽는다.
+function parseAccidentRows(rows, fallbackYear) {
+  let colMap = null;
+  let year = fallbackYear;
+  const records = [];
+  let noDateCount = 0, noNameCount = 0;
+
+  for (const row of rows) {
+    const cells = (row || []).map(c => (c == null ? '' : String(c)));
+    if (cells.length === 0) continue;
+    const joined = cells.join(' ');
+    const ym = joined.match(/(20\d{2})\s*년/);
+    if (ym) year = Number(ym[1]);
+    if (joined.includes('◈')) continue;
+
+    const normedCells = cells.map(normHeaderCell);
+    const maybeMap = detectAccidentColMap(normedCells);
+    if (maybeMap) { colMap = maybeMap; continue; }
+    if (!colMap) continue;
+
+    const get = (key) => (colMap[key] !== undefined ? (cells[colMap[key]] || '').trim() : '');
+    const dateRaw = get('date');
+    const victim = get('victim');
+    if (!dateRaw && !victim) continue; // 빈 줄
+
+    const md = dateRaw.match(/(\d{1,2})\s*월\s*(\d{1,2})\s*일/);
+    if (!md) { if (victim) noDateCount++; continue; }
+    if (!victim) { noNameCount++; continue; }
+
+    const month = Number(md[1]), day = Number(md[2]);
+    let hour = 0, minute = 0;
+    const tm1 = dateRaw.match(/(\d{1,2})\s*:\s*(\d{2})/);
+    const tm2 = dateRaw.match(/(\d{1,2})\s*시\s*(\d{1,2})?\s*분?/);
+    if (tm1) { hour = Number(tm1[1]); minute = Number(tm1[2]); }
+    else if (tm2) { hour = Number(tm2[1]); minute = tm2[2] ? Number(tm2[2]) : 0; }
+    const pad = n => String(n).padStart(2, '0');
+    const y = year || new Date().getFullYear();
+    const accidentAt = `${y}-${pad(month)}-${pad(day)}T${pad(hour)}:${pad(minute)}`;
+
+    records.push({
+      id: genId('EV'), accidentAt, date: accidentAt.slice(0, 10),
+      victimName: victim, department: get('dept'), location: get('place'),
+      content: get('content'), status: get('status'),
+      ambulance: '', // 원본 파일의 "이용/미이용" 체크는 도형(빈 네모 칸)으로만 표시돼 있어 자동으로 읽어낼 수 없음
+      victimInvestigation: get('victimInv'), siteInvestigation: get('siteInv'),
+      regId: session.empId, regName: session.name, regAt: new Date().toISOString(),
+      imported: true
+    });
+  }
+  return { records, noDateCount, noNameCount };
+}
+
+async function renderMembers(content) {
   content.innerHTML = `
     <div class="card">
-      <div class="row-flex" style="justify-content:space-between; margin-bottom:6px;">
-        <div style="font-weight:700; font-size:15px;">조합원 명단</div>
-        <div class="row-flex">
-          <button class="ghost" id="bankUpdateBtn">계좌정보 일괄 등록</button>
-          <button class="primary" id="replaceBtn">명단 교체 등록</button>
-        </div>
+      <div style="font-weight:700; font-size:15px; margin-bottom:6px;">과거 재해 이력 일괄 업로드</div>
+      <div style="font-size:12.5px; color:#888; margin-bottom:14px;">
+        "일일 재해자 사고 내용" 형식의 엑셀 파일(.xls/.xlsx)을 올리면 자동으로 내용을 읽어서 "일일재해" 목록에 한 번에 등록합니다.
+        여러 해(연도)의 파일을 한꺼번에 선택해도 됩니다. 업로드 후 확인 없이 바로 저장되니, 같은 파일을 두 번 올리면 중복 등록되므로 주의하세요.
       </div>
-      <div style="font-size:12px; color:#888; margin-bottom:10px;">계좌정보 일괄 등록: 사번·은행·계좌번호·예금주(선택)만 있는 엑셀을 올리면, 나머지 정보는 그대로 두고 사번이 일치하는 조합원의 계좌정보만 채워집니다.</div>
-      <div class="row-flex" style="margin-bottom:14px;">
-        <input id="mq" placeholder="사번 또는 이름 검색" style="flex:1;" value="${q}" />
-        <button class="ghost" id="mSearchBtn">검색</button>
-        <input type="file" id="replaceFile" accept=".xls,.xlsx" style="display:none" />
-        <input type="file" id="bankFile" accept=".xls,.xlsx" style="display:none" />
-      </div>
-      <div id="memberTableWrap"><div class="empty">불러오는 중...</div></div>
+      <input type="file" id="accFile" accept=".xls,.xlsx" multiple style="display:none" />
+      <button class="primary" id="accUploadBtn">📤 엑셀 업로드</button>
+      <div id="accResult" style="font-size:12.5px; margin-top:12px;"></div>
+      <div class="notice">구급차 이용여부는 원본 양식이 빈 체크박스 도형이라 자동으로 판단할 수 없어 비워둔 채로 등록됩니다. 필요하면 "일일재해" 목록에서 해당 건을 열어 개별로 확인해주세요.</div>
     </div>`;
-  document.getElementById('mSearchBtn').onclick = () => renderMembers(content, 0, document.getElementById('mq').value.trim());
-  document.getElementById('mq').addEventListener('keydown', e => { if (e.key === 'Enter') renderMembers(content, 0, e.target.value.trim()); });
-  document.getElementById('replaceBtn').onclick = () => { if (requireToken()) document.getElementById('replaceFile').click(); };
-  document.getElementById('replaceFile').addEventListener('change', (e) => handleReplaceMembers(content, e));
-  document.getElementById('bankUpdateBtn').onclick = () => { if (requireToken()) document.getElementById('bankFile').click(); };
-  document.getElementById('bankFile').addEventListener('change', (e) => handleBankUpdate(content, e));
 
-  const all = presetAll || await readJSON(PATHS.members, []);
-  let results = all;
-  if (q) {
-    results = /^[0-9A-Za-z]+$/.test(q)
-      ? all.filter(m => String(m.empId).trim().toUpperCase() === q.toUpperCase())
-      : all.filter(m => String(m.name).startsWith(q));
-  }
-  const total = results.length;
-  const page = results.slice(offset, offset + 50);
+  document.getElementById('accUploadBtn').onclick = () => { if (requireToken()) document.getElementById('accFile').click(); };
+  document.getElementById('accFile').addEventListener('change', async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    const btn = document.getElementById('accUploadBtn');
+    const resDiv = document.getElementById('accResult');
+    btn.disabled = true; btn.textContent = '⏳ 처리 중...';
+    resDiv.innerHTML = '';
 
-  const wrap = document.getElementById('memberTableWrap');
-  wrap.innerHTML = `
-    <div style="font-size:12.5px; color:#888; margin-bottom:8px;">총 ${total.toLocaleString()}명 · 숫자 입력은 사번 정확검색, 한글 입력은 이름 검색</div>
-    <table>
-      <thead><tr><th>지단</th><th>사번</th><th>성명</th><th>소속</th><th>연락처/계좌</th><th></th></tr></thead>
-      <tbody>${page.map(m => {
-        const has1 = !!m.phone, has2 = !!(m.bank && m.account);
-        const status = has1 && has2 ? '<span class="badge full">등록완료</span>' : (has1 || has2) ? '<span class="badge part">일부 등록</span>' : '<span class="badge none">미등록</span>';
-        return `<tr>
-          <td>${m.group || ''}</td><td>${m.empId}</td><td>${m.name}</td><td>${m.dept || ''}</td><td>${status}</td>
-          <td class="row-flex"><button class="icon ghost" data-edit="${m.empId}">정보수정</button><button class="icon danger" data-del="${m.empId}">삭제</button></td>
-        </tr>`;
-      }).join('')}</tbody>
-    </table>
-    ${offset + 50 < total ? '<div style="text-align:right; margin-top:10px;"><button class="ghost" id="mMoreBtn">더 보기</button></div>' : ''}`;
-  wrap.querySelectorAll('[data-edit]').forEach(el => el.addEventListener('click', () => {
-    if (!requireToken()) return;
-    openMemberModal(page.find(m => m.empId === el.dataset.edit), all, content, offset, q);
-  }));
-  wrap.querySelectorAll('[data-del]').forEach(el => el.addEventListener('click', async () => {
-    if (!requireToken()) return;
-    if (!confirm('이 조합원을 삭제할까요?')) return;
-    const newList = all.filter(m => String(m.empId).trim().toUpperCase() !== el.dataset.del.toUpperCase());
-    const res = await commitFiles({ [PATHS.members]: newList }, `조합원 삭제: ${el.dataset.del}`);
-    if (!res.ok) return alert('삭제 실패: ' + res.error);
-    renderMembers(content, offset, q, newList);
-  }));
-  const moreBtn = document.getElementById('mMoreBtn');
-  if (moreBtn) moreBtn.onclick = () => renderMembers(content, offset + 50, q, all);
-}
+    let allRecords = [];
+    let totalNoDate = 0, totalNoName = 0;
+    const perFile = [];
+    for (const file of files) {
+      const yearGuess = (String(file.name).match(/(20\d{2})/) || [])[1];
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array' });
+      let fileRecords = [];
+      wb.SheetNames.forEach(sn => {
+        const ws = wb.Sheets[sn];
+        const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
+        const { records, noDateCount, noNameCount } = parseAccidentRows(rows, yearGuess ? Number(yearGuess) : undefined);
+        fileRecords = fileRecords.concat(records);
+        totalNoDate += noDateCount; totalNoName += noNameCount;
+      });
+      perFile.push(`${file.name}: ${fileRecords.length}건`);
+      allRecords = allRecords.concat(fileRecords);
+    }
 
-function openMemberModal(m, currentAll, content, offset, q) {
-  const bg = document.createElement('div');
-  bg.className = 'modal-bg';
-  bg.innerHTML = `
-    <div class="modal">
-      <h3 style="margin-top:0;">조합원 정보 수정</h3>
-      <label>지단</label><input id="mm_group" value="${m.group || ''}" />
-      <label>사번</label><input id="mm_id" value="${m.empId}" disabled />
-      <label>성명</label><input id="mm_name" value="${m.name || ''}" />
-      <label>소속</label><input id="mm_dept" value="${m.dept || ''}" />
-      <label>전화번호</label><input id="mm_phone" value="${m.phone || ''}" />
-      <div class="row-flex">
-        <div style="flex:1;"><label>은행</label><input id="mm_bank" value="${m.bank || ''}" /></div>
-        <div style="flex:1.4;"><label>계좌번호</label><input id="mm_account" value="${m.account || ''}" /></div>
-      </div>
-      <label>예금주</label><input id="mm_holder" value="${m.holder || ''}" />
-      <div class="actions">
-        <button class="ghost" id="mm_cancel">취소</button>
-        <button class="primary" id="mm_save">저장</button>
-      </div>
-    </div>`;
-  document.body.appendChild(bg);
-  bg.querySelector('#mm_cancel').onclick = () => bg.remove();
-  bg.querySelector('#mm_save').onclick = async () => {
-    const saveBtn = bg.querySelector('#mm_save');
-    saveBtn.disabled = true; saveBtn.textContent = '저장 중...';
-    const all = [...currentAll];
-    const idx = all.findIndex(x => String(x.empId).trim().toUpperCase() === String(m.empId).trim().toUpperCase());
-    const updated = {
-      group: bg.querySelector('#mm_group').value, empId: m.empId, name: bg.querySelector('#mm_name').value,
-      dept: bg.querySelector('#mm_dept').value, phone: bg.querySelector('#mm_phone').value,
-      bank: bg.querySelector('#mm_bank').value, account: bg.querySelector('#mm_account').value,
-      holder: bg.querySelector('#mm_holder').value
-    };
-    if (idx >= 0) all[idx] = updated; else all.push(updated);
-    const res = await commitFiles({ [PATHS.members]: all }, `조합원 정보 수정: ${m.empId}`);
-    if (!res.ok) { saveBtn.disabled = false; saveBtn.textContent = '저장'; return alert('저장 실패: ' + res.error); }
-    bg.remove();
-    renderMembers(content, offset, q, all);
-  };
-}
+    if (allRecords.length === 0) {
+      btn.disabled = false; btn.textContent = '📤 엑셀 업로드';
+      resDiv.innerHTML = '인식된 재해 기록이 없습니다. 파일 형식을 확인해주세요.';
+      e.target.value = '';
+      return;
+    }
 
-async function handleReplaceMembers(content, e) {
-  const file = e.target.files[0];
-  if (!file) return;
-  if (!confirm('현재 조합원 명단 전체를 이 파일 내용으로 교체합니다. 계속할까요?')) { e.target.value = ''; return; }
-  const btn = document.getElementById('replaceBtn');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ 처리 중...'; }
-  const buf = await file.arrayBuffer();
-  const wb = XLSX.read(buf, { type: 'array' });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const raw = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
-  const hIdx = raw.findIndex(r => r.includes('사번'));
-  const headers = hIdx >= 0 ? raw[hIdx] : ['지단', '사번', '성명', '소속', '전화번호', '은행', '계좌번호'];
-  const start = hIdx >= 0 ? hIdx + 1 : 0;
-  const col = (n) => headers.indexOf(n);
-  const rows = [];
-  for (let i = start; i < raw.length; i++) {
-    const r = raw[i];
-    if (!r || r.every(c => String(c).trim() === '')) continue;
-    const empId = String(r[col('사번')] ?? '').trim();
-    if (!empId) continue;
-    rows.push({
-      group: r[col('지단')] ?? '', empId, name: r[col('성명')] ?? '', dept: r[col('소속')] ?? '',
-      phone: r[col('전화번호')] ?? '', bank: r[col('은행')] ?? '', account: r[col('계좌번호')] ?? ''
-    });
-  }
-  const res = await commitFiles({ [PATHS.members]: rows }, `조합원 명단 교체 (${rows.length}명)`);
-  e.target.value = '';
-  if (res.ok) { alert(`${rows.length.toLocaleString()}명으로 교체 완료`); renderMembers(content, 0, '', rows); }
-  else { if (btn) { btn.disabled = false; btn.textContent = '명단 교체 등록'; } alert('교체 실패: ' + res.error); }
-}
-
-async function handleBankUpdate(content, e) {
-  const file = e.target.files[0];
-  if (!file) return;
-  const btn = document.getElementById('bankUpdateBtn');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ 처리 중...'; }
-  const buf = await file.arrayBuffer();
-  const wb = XLSX.read(buf, { type: 'array' });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const raw = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
-
-  const hIdx = raw.findIndex(r => r.includes('사번'));
-  let idIdx, bankIdx, accountIdx, holderIdx, start;
-  if (hIdx >= 0) {
-    const headers = raw[hIdx];
-    idIdx = headers.indexOf('사번');
-    bankIdx = headers.indexOf('은행');
-    accountIdx = headers.indexOf('계좌번호');
-    holderIdx = headers.indexOf('예금주');
-    start = hIdx + 1;
-  } else {
-    idIdx = 0; bankIdx = 1; accountIdx = 2; holderIdx = 3; start = 0; // 헤더가 없으면 사번,은행,계좌번호,예금주 순서로 간주
-  }
-
-  const updates = [];
-  for (let i = start; i < raw.length; i++) {
-    const r = raw[i];
-    if (!r || r.every(c => String(c).trim() === '')) continue;
-    const empId = String(r[idIdx] ?? '').trim();
-    if (!empId) continue;
-    updates.push({
-      empId,
-      bank: bankIdx >= 0 ? String(r[bankIdx] ?? '').trim() : '',
-      account: accountIdx >= 0 ? String(r[accountIdx] ?? '').trim() : '',
-      holder: holderIdx >= 0 ? String(r[holderIdx] ?? '').trim() : ''
-    });
-  }
-
-  const all = await readJSON(PATHS.members, []);
-  const indexMap = new Map(all.map((m, i) => [String(m.empId).trim().toUpperCase(), i]));
-  let matched = 0;
-  const unmatched = [];
-  updates.forEach(u => {
-    const idx = indexMap.get(u.empId.toUpperCase());
-    if (idx === undefined) { unmatched.push(u.empId); return; }
-    if (u.bank) all[idx].bank = u.bank;
-    if (u.account) all[idx].account = u.account;
-    if (u.holder) all[idx].holder = u.holder;
-    matched++;
+    const currentEvents = await readJSON(PATHS.events, []);
+    const updatedEvents = [...currentEvents, ...allRecords];
+    const res = await commitFiles({ [PATHS.events]: updatedEvents }, `과거 재해 이력 일괄 업로드 (+${allRecords.length}건)`);
+    btn.disabled = false; btn.textContent = '📤 엑셀 업로드';
+    e.target.value = '';
+    if (!res.ok) { resDiv.innerHTML = '저장 실패: ' + res.error; return; }
+    resDiv.innerHTML = `총 ${allRecords.length}건 등록 완료 (${perFile.join(', ')})`
+      + (totalNoDate || totalNoName ? `<br/>인식하지 못해 제외된 행: 날짜 인식 실패 ${totalNoDate}건, 성명 없음 ${totalNoName}건` : '');
   });
-
-  const res = await commitFiles({ [PATHS.members]: all }, `계좌정보 일괄 등록 (${matched}명)`);
-  e.target.value = '';
-  if (btn) { btn.disabled = false; btn.textContent = '계좌정보 일괄 등록'; }
-  if (!res.ok) return alert('저장 실패: ' + res.error);
-  alert(`계좌정보 ${matched}명 업데이트 완료${unmatched.length ? `\n명단에 없는 사번 ${unmatched.length}건: ${unmatched.join(', ')}` : ''}`);
-  renderMembers(content, 0, '', all);
 }
 
 // ============================================================
