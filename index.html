@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>노동안전보건실 참석확인서 집계</title>
+<title>노동안전보건실 일일재해 집계</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <style>
@@ -387,27 +387,13 @@ function goTab(tab) {
 }
 
 // ============================================================
-// 일정 게시판
+// 일일재해 목록
 // ============================================================
-// start/end는 정시(0~23) 정수. 점심시간(12시~13시)과 겹치는 만큼 자동으로 제외한다.
-function fmtHour(h) { return String(h).padStart(2, '0') + '시'; }
-
-function computeHours(start, end) {
-  let total = end - start;
-  if (total < 0) total += 24; // 자정을 넘는 경우
-  const overlapStart = Math.max(start, 12);
-  const overlapEnd = Math.min(start + total, 13);
-  const lunchOverlap = Math.max(0, overlapEnd - overlapStart);
-  return Math.max(0, total - lunchOverlap);
-}
-
-async function renderEvents(content, offset = 0, preset = null) {
+async function renderEvents(content, offset = 0, presetEvents = null) {
   const EVENTS_PAGE_SIZE = 7;
-  // preset: 방금 이 브라우저에서 직접 쓴 데이터가 있으면 그걸 바로 쓰고,
+  // presetEvents: 방금 이 브라우저에서 직접 쓴 데이터가 있으면 그걸 바로 쓰고,
   // GitHub의 읽기 캐시(raw.githubusercontent.com)가 갱신될 때까지 기다리지 않는다.
-  const [events, attendance, settings] = preset ? [preset.events, preset.attendance, preset.settings] : await Promise.all([
-    readJSON(PATHS.events, []), readJSON(PATHS.attendance, []), readJSON(PATHS.settings, { rate: 15000 })
-  ]);
+  const events = presetEvents || await readJSON(PATHS.events, []);
   events.sort((a, b) => String(b.accidentAt || b.date || '').localeCompare(String(a.accidentAt || a.date || '')) || String(b.id).localeCompare(String(a.id)));
   const totalPages = Math.max(1, Math.ceil(events.length / EVENTS_PAGE_SIZE));
   const curPage = Math.floor(offset / EVENTS_PAGE_SIZE);
@@ -450,30 +436,25 @@ async function renderEvents(content, offset = 0, preset = null) {
       </div>` : ''}
     </div>`;
 
-  if (isAdmin()) document.getElementById('addEventBtn').onclick = () => openAddEventModal(content, events, attendance, settings);
+  if (isAdmin()) document.getElementById('addEventBtn').onclick = () => openAddEventModal(content, events);
   content.querySelectorAll('[data-open]').forEach(el => el.addEventListener('click', () => openEventDetail(el.dataset.open, content)));
   content.querySelectorAll('[data-del]').forEach(el => el.addEventListener('click', async (ev2) => {
     if (!requireToken()) return;
-    if (!confirm('이 일정과 출석기록을 삭제할까요?')) return;
+    if (!confirm('이 재해 기록을 삭제할까요?')) return;
     const btn = ev2.currentTarget;
     btn.disabled = true; btn.textContent = '삭제 중...';
     const id = el.dataset.del;
     const newEvents = events.filter(e => e.id !== id);
-    const newAttendance = attendance.filter(a => a.eventId !== id);
-    // 파일 2개를 한 번에 묶어 저장하면 저장소 전체 기준으로 충돌이 잦아지므로,
-    // 파일별로 따로(빠른 단일 파일 경로) 순서대로 저장한다.
-    const res1 = await commitFiles({ [PATHS.events]: newEvents }, `일정 삭제: ${id}`);
-    if (!res1.ok) { btn.disabled = false; btn.textContent = '삭제'; return alert('삭제 실패: ' + res1.error); }
-    const res2 = await commitFiles({ [PATHS.attendance]: newAttendance }, `일정 삭제에 따른 출석기록 정리: ${id}`);
-    if (!res2.ok) { alert('일정은 삭제됐지만 출석기록 정리는 실패했습니다: ' + res2.error + ' (다시 삭제를 시도해보세요)'); }
-    renderEvents(content, 0, { events: newEvents, attendance: newAttendance, settings });
+    const res = await commitFiles({ [PATHS.events]: newEvents }, `재해 기록 삭제: ${id}`);
+    if (!res.ok) { btn.disabled = false; btn.textContent = '삭제'; return alert('삭제 실패: ' + res.error); }
+    renderEvents(content, 0, newEvents);
   }));
   const prevBtn = document.getElementById('prevPageBtn');
   const nextBtn = document.getElementById('nextPageBtn');
-  if (prevBtn) prevBtn.onclick = () => renderEvents(content, (curPage - 1) * EVENTS_PAGE_SIZE, { events, attendance, settings });
-  if (nextBtn) nextBtn.onclick = () => renderEvents(content, (curPage + 1) * EVENTS_PAGE_SIZE, { events, attendance, settings });
+  if (prevBtn) prevBtn.onclick = () => renderEvents(content, (curPage - 1) * EVENTS_PAGE_SIZE, events);
+  if (nextBtn) nextBtn.onclick = () => renderEvents(content, (curPage + 1) * EVENTS_PAGE_SIZE, events);
   content.querySelectorAll('[data-page]').forEach(el => el.addEventListener('click', () =>
-    renderEvents(content, Number(el.dataset.page) * EVENTS_PAGE_SIZE, { events, attendance, settings })));
+    renderEvents(content, Number(el.dataset.page) * EVENTS_PAGE_SIZE, events)));
 }
 
 function genId(prefix) {
@@ -492,7 +473,7 @@ function fmtAccidentAt(v) {
   return t ? `${d} ${t}` : d;
 }
 
-function openAddEventModal(listEl, currentEvents, currentAttendance, currentSettings) {
+function openAddEventModal(listEl, currentEvents) {
   if (!requireToken()) return;
   const bg = document.createElement('div');
   bg.className = 'modal-bg';
@@ -574,7 +555,7 @@ function openAddEventModal(listEl, currentEvents, currentAttendance, currentSett
     if (!res.ok) { saveBtn.disabled = false; saveBtn.textContent = '저장'; return alert('저장 실패: ' + res.error); }
     bg.remove();
     // events.json만 바뀌었으므로 attendance/settings는 이미 있던 값을 그대로 재사용 (추가 조회 없음)
-    renderEvents(listEl, 0, { events: updatedEvents, attendance: currentAttendance, settings: currentSettings });
+    renderEvents(listEl, 0, updatedEvents);
   };
 }
 
@@ -614,9 +595,7 @@ async function openEventDetail(id, content) {
   bg.className = 'modal-bg';
   bg.innerHTML = `<div class="modal wide"><div class="empty">불러오는 중...</div></div>`;
   document.body.appendChild(bg);
-  const [events, attendance, settings] = await Promise.all([
-    readJSON(PATHS.events, []), readJSON(PATHS.attendance, []), readJSON(PATHS.settings, { rate: 15000 })
-  ]);
+  const events = await readJSON(PATHS.events, []);
   const ev = events.find(x => x.id === id);
   if (!ev) {
     bg.querySelector('.modal').innerHTML = `<div class="empty">해당 기록을 찾을 수 없습니다.</div>
@@ -646,7 +625,7 @@ async function openEventDetail(id, content) {
     <div class="notice">${nl2br(ev.siteInvestigation) || '-'}</div>
     <div style="font-size:12px; color:#888; margin-top:14px;">등록 ${esc(ev.regName)} (${esc(ev.regId)}) · ${ev.regAt ? new Date(ev.regAt).toLocaleString() : ''}</div>
     <div class="actions"><button class="ghost" id="e_close" style="flex:1;">닫기</button></div>`;
-  bg.querySelector('#e_close').onclick = () => { bg.remove(); renderEvents(content, 0, { events, attendance, settings }); };
+  bg.querySelector('#e_close').onclick = () => { bg.remove(); renderEvents(content, 0, events); };
 }
 
 // ============================================================
@@ -1030,7 +1009,7 @@ async function renderUsers(content, preset = null) {
   content.innerHTML = `
     <div class="card">
       <div style="font-weight:700; font-size:15px; margin-bottom:2px;">GitHub 연결</div>
-      <div style="font-size:12.5px; color:#888; margin-bottom:12px;">일정 등록, 출석자 업로드, 명단 수정 등 쓰기 작업에는 이 브라우저에 저장된 GitHub 토큰이 필요합니다.</div>
+      <div style="font-size:12.5px; color:#888; margin-bottom:12px;">일일재해등록, 재해 이력 업로드, 재해 기록 삭제 등 쓰기 작업에는 이 브라우저에 저장된 GitHub 토큰이 필요합니다.</div>
       <div class="row-flex">
         <span class="badge ${hasToken ? 'full' : 'none'}">${hasToken ? '토큰 등록됨' : '토큰 없음'}</span>
         <button class="ghost" id="tokenBtn">${hasToken ? '토큰 변경' : '토큰 등록'}</button>
