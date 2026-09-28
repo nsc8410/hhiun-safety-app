@@ -414,7 +414,7 @@ function goTab(tab) {
 // 일일재해 목록
 // ============================================================
 async function renderEvents(content, offset = 0, presetEvents = null) {
-  const EVENTS_PAGE_SIZE = 7;
+  const EVENTS_PAGE_SIZE = 20;
   // presetEvents: 방금 이 브라우저에서 직접 쓴 데이터가 있으면 그걸 바로 쓰고,
   // GitHub의 읽기 캐시(raw.githubusercontent.com)가 갱신될 때까지 기다리지 않는다.
   const events = presetEvents || await readJSON(PATHS.events, []);
@@ -833,14 +833,10 @@ async function renderAggregate(content) {
     };
   }
 
-  document.getElementById('agRunBtn').onclick = async () => {
-    const dateFrom = document.getElementById('agFrom').value;
-    const dateTo = document.getElementById('agTo').value;
-    if (!dateFrom || !dateTo) return alert('시작일과 종료일을 선택하세요.');
-    const data = await runAggregate(dateFrom, dateTo);
+  function renderResult(data) {
     const max = Math.max(...data.types.map(t => t.count), 1);
     document.getElementById('agResult').innerHTML = `
-      <div style="font-weight:700; font-size:14.5px; margin-bottom:4px;">${dateFrom} ~ ${dateTo} 집계 완료</div>
+      <div style="font-weight:700; font-size:14.5px; margin-bottom:4px;">${data.dateFrom} ~ ${data.dateTo} 집계</div>
       <div class="summary-grid" style="grid-template-columns:repeat(3,1fr);">
         <div class="box"><b>총 재해 건수</b><span>${data.total}건</span></div>
         <div class="box"><b>구급차 이용</b><span>${data.ambCount}건</span></div>
@@ -867,15 +863,58 @@ async function renderAggregate(content) {
             <tr><td>${row.month}</td>${data.typeList.map(t => `<td style="text-align:center;">${row.counts[t] || 0}</td>`).join('')}<td style="text-align:center; font-weight:700;">${row.total}</td></tr>`).join('')}
           <tr style="font-weight:700; background:#f7f9fc;"><td>합계</td>${data.typeList.map(t => `<td style="text-align:center;">${data.types.find(x => x.status === t)?.count || 0}</td>`).join('')}<td style="text-align:center;">${data.total}</td></tr>
         </table>
+      </div>
+      <div style="font-weight:700; font-size:13.5px; margin-top:24px; margin-bottom:8px;">선택한 월 · 유형만 엑셀 다운로드</div>
+      <div class="row-flex" style="flex-wrap:wrap; align-items:flex-end;">
+        <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">월</label>
+          <select id="agFilterMonth">
+            <option value="all">전체 월</option>
+            ${data.months.map(m => `<option value="${m}">${m}</option>`).join('')}
+          </select>
+        </div>
+        <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">재해 유형</label>
+          <select id="agFilterType">
+            <option value="all">전체 유형</option>
+            ${data.typeList.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}
+          </select>
+        </div>
+        <button class="ghost" id="agFilterExportBtn">선택 조건 엑셀 다운로드</button>
       </div>`}`;
+
     document.getElementById('agExportBtn').onclick = async () => {
       const btn = document.getElementById('agExportBtn');
       btn.disabled = true; btn.textContent = '⏳ 파일 만드는 중...';
-      const fresh = await runAggregate(dateFrom, dateTo);
+      const fresh = await runAggregate(data.dateFrom, data.dateTo);
       await exportAggregateExcel(fresh);
       btn.disabled = false; btn.textContent = '전체 집계 엑셀 출력';
     };
+
+    const filterBtn = document.getElementById('agFilterExportBtn');
+    if (filterBtn) filterBtn.onclick = async () => {
+      filterBtn.disabled = true; filterBtn.textContent = '⏳ 파일 만드는 중...';
+      const fresh = await runAggregate(data.dateFrom, data.dateTo);
+      const month = document.getElementById('agFilterMonth').value;
+      const type = document.getElementById('agFilterType').value;
+      const filtered = fresh.events.filter(e => {
+        const d = e.date || (e.accidentAt ? e.accidentAt.slice(0, 10) : '');
+        const t = e.accidentType || guessAccidentType(e.content) || '미분류';
+        return (month === 'all' || d.slice(0, 7) === month) && (type === 'all' || t === type);
+      });
+      const label = `${month === 'all' ? '전체월' : month}_${type === 'all' ? '전체유형' : type}`;
+      await exportFilteredExcel(filtered, label);
+      filterBtn.disabled = false; filterBtn.textContent = '선택 조건 엑셀 다운로드';
+    };
+  }
+
+  document.getElementById('agRunBtn').onclick = async () => {
+    const dateFrom = document.getElementById('agFrom').value;
+    const dateTo = document.getElementById('agTo').value;
+    if (!dateFrom || !dateTo) return alert('시작일과 종료일을 선택하세요.');
+    renderResult(await runAggregate(dateFrom, dateTo));
   };
+
+  // 탭을 열자마자 기본 기간(최근 180일)으로 바로 집계를 보여준다.
+  renderResult(await runAggregate(document.getElementById('agFrom').value, document.getElementById('agTo').value));
 }
 
 function dotDate(s) { return String(s || '').replace(/-/g, '.'); }
@@ -908,6 +947,41 @@ function autoFitColumns(ws, headerRowNumber) {
     });
     col.width = Math.min(Math.ceil(maxLen) + 3, 60);
   });
+}
+
+// 선택한 월/유형 조건에 맞는 재해만 담은 엑셀(시트 1개)을 만들어 바로 다운로드한다.
+async function exportFilteredExcel(events, label) {
+  const wb = new ExcelJS.Workbook();
+  const sorted = [...events].sort((a, b) => String(a.accidentAt || a.date || '').localeCompare(String(b.accidentAt || b.date || '')));
+  const ws = wb.addWorksheet('재해 목록');
+  ws.columns = [
+    { header: '재해 일자 및 시간', key: 'at' }, { header: '재해자', key: 'victim' }, { header: '소속부서', key: 'dept' },
+    { header: '노동자 구분', key: 'worker' },
+    { header: '재해장소', key: 'place' }, { header: '재해내용', key: 'content' }, { header: '재해 유형', key: 'type' },
+    { header: '재해자 상태', key: 'status' },
+    { header: '구급차', key: 'amb' }, { header: '병원명', key: 'hospital' },
+    { header: '재해자 조사', key: 'vi' }, { header: '현장 조사', key: 'si' }
+  ];
+  sorted.forEach(e => ws.addRow({
+    at: fmtAccidentAt(e.accidentAt) || e.date || '', victim: e.victimName || e.name || '', dept: e.department || '',
+    worker: (e.workerTypes && e.workerTypes.length) ? e.workerTypes.join(', ') : '',
+    place: e.location || '', content: e.content || '', type: e.accidentType || guessAccidentType(e.content) || '미분류',
+    status: e.status || '', amb: e.ambulance || '', hospital: e.hospital || '',
+    vi: e.victimInvestigation || '', si: e.siteInvestigation || ''
+  }));
+  styleHeaderRow(ws.getRow(1));
+  ws.autoFilter = { from: 'A1', to: { row: 1, column: ws.columns.length } };
+  ws.getColumn('content').alignment = { wrapText: true, vertical: 'top' };
+  autoFitColumns(ws);
+  ws.views = [{ state: 'frozen', ySplit: 1 }];
+
+  const buf = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const filename = `${label}_재해목록.xlsx`;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 async function exportAggregateExcel(data) {
