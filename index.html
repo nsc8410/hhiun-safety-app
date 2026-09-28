@@ -447,7 +447,7 @@ async function renderEvents(content, offset = 0, presetEvents = null) {
                 <div style="font-size:12px; color:#888; margin-top:3px;">${fmtAccidentAt(ev.accidentAt) || ev.date || ''}${ev.department ? ' · ' + ev.department : ''}${ev.location ? ' · ' + ev.location : ''} · 등록 ${ev.regName} (${ev.regId})</div>
               </div>
               <div class="row-flex">
-                ${isAdmin() ? `<button class="icon danger" data-del="${ev.id}">삭제</button>` : ''}
+                ${isAdmin() ? `<button class="icon ghost" data-edit="${ev.id}">수정</button><button class="icon danger" data-del="${ev.id}">삭제</button>` : ''}
               </div>
             </div>
           </div>`).join('')}
@@ -462,6 +462,11 @@ async function renderEvents(content, offset = 0, presetEvents = null) {
 
   if (isAdmin()) document.getElementById('addEventBtn').onclick = () => openAddEventModal(content, events);
   content.querySelectorAll('[data-open]').forEach(el => el.addEventListener('click', () => openEventDetail(el.dataset.open, content)));
+  content.querySelectorAll('[data-edit]').forEach(el => el.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const ev = events.find(x => x.id === el.dataset.edit);
+    if (ev) openAddEventModal(content, events, ev);
+  }));
   content.querySelectorAll('[data-del]').forEach(el => el.addEventListener('click', async (ev2) => {
     if (!requireToken()) return;
     if (!confirm('이 재해 기록을 삭제할까요?')) return;
@@ -497,47 +502,50 @@ function fmtAccidentAt(v) {
   return t ? `${d} ${t}` : d;
 }
 
-function openAddEventModal(listEl, currentEvents) {
+function openAddEventModal(listEl, currentEvents, existingEvent = null) {
   if (!requireToken()) return;
+  const isEdit = !!existingEvent;
+  const ev = existingEvent || {};
   const bg = document.createElement('div');
   bg.className = 'modal-bg';
   const now = new Date();
   const pad = n => String(n).padStart(2, '0');
   const nowLocal = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  const workerTypesSet = new Set(ev.workerTypes || []);
   bg.innerHTML = `
     <div class="modal wide">
-      <h3 style="margin-top:0;">일일재해등록</h3>
+      <h3 style="margin-top:0;">${isEdit ? '일일재해 수정' : '일일재해등록'}</h3>
       <label>재해 일자 및 시간</label>
-      <input id="e_at" type="datetime-local" value="${nowLocal}" />
+      <input id="e_at" type="datetime-local" value="${ev.accidentAt || nowLocal}" />
       <label>재해자 성명</label>
-      <input id="e_victim" placeholder="예: 홍길동" />
+      <input id="e_victim" placeholder="예: 홍길동" value="${esc(ev.victimName || ev.name || '')}" />
       <label>소속부서</label>
-      <input id="e_dept" placeholder="예: 생산1부" />
+      <input id="e_dept" placeholder="예: 생산1부" value="${esc(ev.department || '')}" />
       <label>노동자 구분</label>
       <div class="row-flex" style="flex-wrap:wrap; gap:14px; margin:2px 0 12px;">
-        ${WORKER_TYPES.map(w => `<label style="display:flex; align-items:center; gap:6px; margin:0; font-weight:400;"><input type="checkbox" class="e_worker" value="${w}" style="width:auto;" /> ${w}</label>`).join('')}
+        ${WORKER_TYPES.map(w => `<label style="display:flex; align-items:center; gap:6px; margin:0; font-weight:400;"><input type="checkbox" class="e_worker" value="${w}" style="width:auto;" ${workerTypesSet.has(w) ? 'checked' : ''} /> ${w}</label>`).join('')}
       </div>
       <label>재해장소</label>
-      <input id="e_place" placeholder="예: 3공장 도장라인" />
+      <input id="e_place" placeholder="예: 3공장 도장라인" value="${esc(ev.location || '')}" />
       <label>재해내용</label>
-      <textarea id="e_content" rows="4" placeholder="재해 발생 경위를 입력하세요."></textarea>
+      <textarea id="e_content" rows="4" placeholder="재해 발생 경위를 입력하세요.">${esc(ev.content || '')}</textarea>
       <label>재해 유형(사고 형태)</label>
       <select id="e_type">
-        ${ACCIDENT_TYPES.map(t => `<option value="${t}">${t}</option>`).join('')}
+        ${ACCIDENT_TYPES.map(t => `<option value="${t}" ${(ev.accidentType || '') === t ? 'selected' : ''}>${t}</option>`).join('')}
       </select>
       <label>재해자 상태</label>
-      <input id="e_status" placeholder="예: 경상(현장조치 후 정상근무)" />
+      <input id="e_status" placeholder="예: 경상(현장조치 후 정상근무)" value="${esc(ev.status || '')}" />
       <label>구급차 이용여부</label>
       <div class="row-flex" style="gap:20px; margin:2px 0 12px;">
-        <label style="display:flex; align-items:center; gap:6px; margin:0; font-weight:400;"><input type="checkbox" id="e_amb_use" style="width:auto;" /> 이용</label>
-        <label style="display:flex; align-items:center; gap:6px; margin:0; font-weight:400;"><input type="checkbox" id="e_amb_no" style="width:auto;" checked /> 미이용</label>
+        <label style="display:flex; align-items:center; gap:6px; margin:0; font-weight:400;"><input type="checkbox" id="e_amb_use" style="width:auto;" ${ev.ambulance === '이용' ? 'checked' : ''} /> 이용</label>
+        <label style="display:flex; align-items:center; gap:6px; margin:0; font-weight:400;"><input type="checkbox" id="e_amb_no" style="width:auto;" ${ev.ambulance === '이용' ? '' : 'checked'} /> 미이용</label>
       </div>
       <label>병원명</label>
-      <input id="e_hospital" placeholder="예: OO병원 (해당 시에만 입력)" />
+      <input id="e_hospital" placeholder="예: OO병원 (해당 시에만 입력)" value="${esc(ev.hospital || '')}" />
       <label>재해자 조사</label>
-      <input id="e_victimInv" placeholder="재해자 조사를 진행한 집행간부 성명" />
+      <input id="e_victimInv" placeholder="재해자 조사를 진행한 집행간부 성명" value="${esc(ev.victimInvestigation || '')}" />
       <label>현장 조사</label>
-      <input id="e_siteInv" placeholder="현장 조사를 진행한 집행간부 성명" />
+      <input id="e_siteInv" placeholder="현장 조사를 진행한 집행간부 성명" value="${esc(ev.siteInvestigation || '')}" />
       <div class="actions">
         <button class="ghost" id="e_cancel">취소</button>
         <button class="primary" id="e_save">저장</button>
@@ -557,6 +565,7 @@ function openAddEventModal(listEl, currentEvents) {
     if (guess) bg.querySelector('#e_type').value = guess;
   });
   bg.querySelector('#e_type').addEventListener('change', function () { this.dataset.touched = '1'; });
+  if (isEdit) bg.querySelector('#e_type').dataset.touched = '1'; // 기존 값이 있으면 자동추정으로 덮어쓰지 않음
 
   bg.querySelector('#e_cancel').onclick = () => bg.remove();
   bg.querySelector('#e_save').onclick = async () => {
@@ -576,14 +585,19 @@ function openAddEventModal(listEl, currentEvents) {
     const siteInvestigation = bg.querySelector('#e_siteInv').value.trim();
     const saveBtn = bg.querySelector('#e_save');
     saveBtn.disabled = true; saveBtn.textContent = '저장 중...';
-    const newEvent = {
-      id: genId('EV'), accidentAt, date: accidentAt.slice(0, 10),
+    const savedEvent = {
+      id: isEdit ? ev.id : genId('EV'), accidentAt, date: accidentAt.slice(0, 10),
       victimName, department, workerTypes, location, content: contentText, accidentType, status, ambulance, hospital,
       victimInvestigation, siteInvestigation,
-      regId: session.empId, regName: session.name, regAt: new Date().toISOString()
+      regId: isEdit ? ev.regId : session.empId,
+      regName: isEdit ? ev.regName : session.name,
+      regAt: isEdit ? ev.regAt : new Date().toISOString(),
+      ...(isEdit ? { editedBy: session.name, editedAt: new Date().toISOString() } : {})
     };
-    const updatedEvents = [...currentEvents, newEvent];
-    const res = await commitFiles({ [PATHS.events]: updatedEvents }, `일일재해등록: ${victimName}`);
+    const updatedEvents = isEdit
+      ? currentEvents.map(e => e.id === ev.id ? savedEvent : e)
+      : [...currentEvents, savedEvent];
+    const res = await commitFiles({ [PATHS.events]: updatedEvents }, isEdit ? `재해 기록 수정: ${victimName}` : `일일재해등록: ${victimName}`);
     if (!res.ok) { saveBtn.disabled = false; saveBtn.textContent = '저장'; return alert('저장 실패: ' + res.error); }
     bg.remove();
     // events.json만 바뀌었으므로 attendance/settings는 이미 있던 값을 그대로 재사용 (추가 조회 없음)
@@ -661,9 +675,14 @@ async function openEventDetail(id, content) {
     <div class="notice">${nl2br(ev.victimInvestigation) || '-'}</div>
     <label>현장 조사</label>
     <div class="notice">${nl2br(ev.siteInvestigation) || '-'}</div>
-    <div style="font-size:12px; color:#888; margin-top:14px;">등록 ${esc(ev.regName)} (${esc(ev.regId)}) · ${ev.regAt ? new Date(ev.regAt).toLocaleString() : ''}</div>
-    <div class="actions"><button class="ghost" id="e_close" style="flex:1;">닫기</button></div>`;
+    <div style="font-size:12px; color:#888; margin-top:14px;">등록 ${esc(ev.regName)} (${esc(ev.regId)}) · ${ev.regAt ? new Date(ev.regAt).toLocaleString() : ''}${ev.editedAt ? ` · 수정 ${esc(ev.editedBy)} (${new Date(ev.editedAt).toLocaleString()})` : ''}</div>
+    <div class="actions">
+      <button class="ghost" id="e_close" style="flex:1;">닫기</button>
+      ${isAdmin() ? '<button class="primary" id="e_edit" style="flex:1;">수정</button>' : ''}
+    </div>`;
   bg.querySelector('#e_close').onclick = () => { bg.remove(); renderEvents(content, 0, events); };
+  const editBtn = bg.querySelector('#e_edit');
+  if (editBtn) editBtn.onclick = () => { bg.remove(); openAddEventModal(content, events, ev); };
 }
 
 // ============================================================
