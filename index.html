@@ -29,7 +29,8 @@
   .badge.part { background:#fff4e0; color:#a15c00; }
   .badge.none { background:#f1f1f1; color:#888; }
   .modal-bg { position:fixed; inset:0; background:rgba(0,0,0,0.4); display:flex; align-items:center; justify-content:center; z-index:50; padding:16px; }
-  .modal { background:#fff; border-radius:12px; padding:22px; width:400px; max-width:100%; max-height:90vh; overflow:auto; }
+  .modal { background:#fff; border-radius:12px; padding:22px; width:400px; max-width:100%; max-height:90vh; overflow:auto; position:relative; }
+  .modal-x { position:absolute; top:14px; right:14px; width:28px; height:28px; border:none; background:#f2f4f7; border-radius:50%; font-size:16px; line-height:1; cursor:pointer; color:#555; }
   .modal.wide { width:520px; }
   .modal label { font-size:12px; font-weight:700; display:block; margin:10px 0 4px; }
   .modal input, .modal select, .modal textarea { width:100%; }
@@ -514,6 +515,7 @@ function openAddEventModal(listEl, currentEvents, existingEvent = null) {
   const workerTypesSet = new Set(ev.workerTypes || []);
   bg.innerHTML = `
     <div class="modal wide">
+      <button class="modal-x" id="e_close_x" title="닫기">✕</button>
       <h3 style="margin-top:0;">${isEdit ? '일일재해 수정' : '일일재해등록'}</h3>
       <label>재해 일자 및 시간</label>
       <input id="e_at" type="datetime-local" value="${ev.accidentAt || nowLocal}" />
@@ -568,6 +570,7 @@ function openAddEventModal(listEl, currentEvents, existingEvent = null) {
   if (isEdit) bg.querySelector('#e_type').dataset.touched = '1'; // 기존 값이 있으면 자동추정으로 덮어쓰지 않음
 
   bg.querySelector('#e_cancel').onclick = () => bg.remove();
+  bg.querySelector('#e_close_x').onclick = () => bg.remove();
   bg.querySelector('#e_save').onclick = async () => {
     const victimName = bg.querySelector('#e_victim').value.trim();
     if (!victimName) return alert('재해자 성명을 입력하세요.');
@@ -690,7 +693,7 @@ async function openEventDetail(id, content) {
 // ============================================================
 async function renderParticipation(content, filters = null) {
   const events = await readJSON(PATHS.events, []);
-  const f = filters || { from: '', to: '', dept: '', type: '', amb: '' };
+  const f = filters || { from: '', to: '', dept: '', type: '', amb: '', worker: '' };
   const evType = ev => ev.accidentType || guessAccidentType(ev.content) || '미분류';
 
   let filtered = events.filter(ev => {
@@ -700,6 +703,7 @@ async function renderParticipation(content, filters = null) {
     if (f.dept && !(ev.department || '').includes(f.dept)) return false;
     if (f.type && evType(ev) !== f.type) return false;
     if (f.amb && ev.ambulance !== f.amb) return false;
+    if (f.worker && !(ev.workerTypes || []).includes(f.worker)) return false;
     return true;
   });
   filtered.sort((a, b) => String(b.accidentAt || b.date || '').localeCompare(String(a.accidentAt || a.date || '')));
@@ -719,6 +723,12 @@ async function renderParticipation(content, filters = null) {
             ${ACCIDENT_TYPES.map(t => `<option value="${t}" ${f.type === t ? 'selected' : ''}>${t}</option>`).join('')}
           </select>
         </div>
+        <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">노동자 구분</label>
+          <select id="pWorker">
+            <option value="">전체</option>
+            ${WORKER_TYPES.map(w => `<option value="${w}" ${f.worker === w ? 'selected' : ''}>${w}</option>`).join('')}
+          </select>
+        </div>
         <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">구급차</label>
           <select id="pAmb">
             <option value="" ${f.amb === '' ? 'selected' : ''}>전체</option>
@@ -735,12 +745,13 @@ async function renderParticipation(content, filters = null) {
       <div id="pList" style="margin-top:14px;">
         ${filtered.length === 0 ? '<div class="empty">조건에 맞는 재해가 없습니다.</div>' : `
         <table>
-          <tr><th>일시</th><th>재해자</th><th>소속부서</th><th>장소</th><th>재해 유형</th><th>구급차</th></tr>
+          <tr><th>일시</th><th>재해자</th><th>소속부서</th><th>노동자 구분</th><th>장소</th><th>재해 유형</th><th>구급차</th></tr>
           ${filtered.slice(0, 300).map(ev => `
             <tr class="link" data-open="${ev.id}">
               <td>${fmtAccidentAt(ev.accidentAt) || ev.date || ''}</td>
               <td>${esc(ev.victimName || ev.name)}</td>
               <td>${esc(ev.department)}</td>
+              <td>${(ev.workerTypes && ev.workerTypes.length) ? esc(ev.workerTypes.join(', ')) : '-'}</td>
               <td>${esc(ev.location)}</td>
               <td>${esc(evType(ev))}</td>
               <td>${ev.ambulance ? esc(ev.ambulance) : '-'}</td>
@@ -753,7 +764,7 @@ async function renderParticipation(content, filters = null) {
   const collect = () => ({
     from: document.getElementById('pFrom').value, to: document.getElementById('pTo').value,
     dept: document.getElementById('pDept').value.trim(), type: document.getElementById('pType').value,
-    amb: document.getElementById('pAmb').value
+    amb: document.getElementById('pAmb').value, worker: document.getElementById('pWorker').value
   });
   document.getElementById('pSearchBtn').onclick = () => renderParticipation(content, collect());
   document.getElementById('pDept').addEventListener('keydown', e => { if (e.key === 'Enter') renderParticipation(content, collect()); });
@@ -811,6 +822,10 @@ async function renderAggregate(content) {
       .sort((a, b) => b.count - a.count);
     const typeList = types.map(t => t.status);
 
+    const workerCounts = WORKER_TYPES.map(w => ({
+      worker: w, count: inRange.filter(e => (e.workerTypes || []).includes(w)).length
+    }));
+
     const months = buildMonthRange(dateFrom, dateTo);
     const monthlyMatrix = months.map(month => {
       const rowEvents = inRange.filter(e => {
@@ -827,7 +842,7 @@ async function renderAggregate(content) {
     });
 
     return {
-      dateFrom, dateTo, events: inRange, types, typeList, months, monthlyMatrix,
+      dateFrom, dateTo, events: inRange, types, typeList, months, monthlyMatrix, workerCounts,
       total: inRange.length,
       ambCount: inRange.filter(e => e.ambulance === '이용').length
     };
@@ -854,6 +869,18 @@ async function renderAggregate(content) {
             </div>
           </div>`).join('')}
       </div>
+      <div style="font-weight:700; font-size:13.5px; margin-top:24px; margin-bottom:8px;">노동자 구분별 현황</div>
+      <div>
+        ${data.workerCounts.map(w => `
+          <div style="margin-bottom:10px;">
+            <div class="row-flex" style="justify-content:space-between; font-size:13px; margin-bottom:3px;">
+              <span>${esc(w.worker)}</span><span style="font-weight:700;">${w.count}건</span>
+            </div>
+            <div style="background:#edf0f4; border-radius:6px; height:10px;">
+              <div style="background:#5b8a5b; border-radius:6px; height:10px; width:${Math.max((w.count / Math.max(...data.workerCounts.map(x => x.count), 1)) * 100, w.count ? 4 : 0)}%;"></div>
+            </div>
+          </div>`).join('')}
+      </div>
       ${data.typeList.length === 0 ? '' : `
       <div style="font-weight:700; font-size:13.5px; margin-top:24px; margin-bottom:8px;">월별 × 유형별 집계</div>
       <div style="overflow-x:auto;">
@@ -864,7 +891,7 @@ async function renderAggregate(content) {
           <tr style="font-weight:700; background:#f7f9fc;"><td>합계</td>${data.typeList.map(t => `<td style="text-align:center;">${data.types.find(x => x.status === t)?.count || 0}</td>`).join('')}<td style="text-align:center;">${data.total}</td></tr>
         </table>
       </div>
-      <div style="font-weight:700; font-size:13.5px; margin-top:24px; margin-bottom:8px;">선택한 월 · 유형만 엑셀 다운로드</div>
+      <div style="font-weight:700; font-size:13.5px; margin-top:24px; margin-bottom:8px;">선택한 월 · 유형 · 노동자 구분만 엑셀 다운로드</div>
       <div class="row-flex" style="flex-wrap:wrap; align-items:flex-end;">
         <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">월</label>
           <select id="agFilterMonth">
@@ -876,6 +903,12 @@ async function renderAggregate(content) {
           <select id="agFilterType">
             <option value="all">전체 유형</option>
             ${data.typeList.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}
+          </select>
+        </div>
+        <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">노동자 구분</label>
+          <select id="agFilterWorker">
+            <option value="all">전체</option>
+            ${WORKER_TYPES.map(w => `<option value="${w}">${w}</option>`).join('')}
           </select>
         </div>
         <button class="ghost" id="agFilterExportBtn">선택 조건 엑셀 다운로드</button>
@@ -895,12 +928,15 @@ async function renderAggregate(content) {
       const fresh = await runAggregate(data.dateFrom, data.dateTo);
       const month = document.getElementById('agFilterMonth').value;
       const type = document.getElementById('agFilterType').value;
+      const worker = document.getElementById('agFilterWorker').value;
       const filtered = fresh.events.filter(e => {
         const d = e.date || (e.accidentAt ? e.accidentAt.slice(0, 10) : '');
         const t = e.accidentType || guessAccidentType(e.content) || '미분류';
-        return (month === 'all' || d.slice(0, 7) === month) && (type === 'all' || t === type);
+        return (month === 'all' || d.slice(0, 7) === month)
+          && (type === 'all' || t === type)
+          && (worker === 'all' || (e.workerTypes || []).includes(worker));
       });
-      const label = `${month === 'all' ? '전체월' : month}_${type === 'all' ? '전체유형' : type}`;
+      const label = `${month === 'all' ? '전체월' : month}_${type === 'all' ? '전체유형' : type}${worker === 'all' ? '' : '_' + worker}`;
       await exportFilteredExcel(filtered, label);
       filterBtn.disabled = false; filterBtn.textContent = '선택 조건 엑셀 다운로드';
     };
@@ -999,6 +1035,15 @@ async function exportAggregateExcel(data) {
   data.types.forEach(t => ws1.addRow([t.status, t.count, data.total ? Math.round((t.count / data.total) * 1000) / 10 : 0]));
   styleHeaderRow(ws1.getRow(ws1HeaderRowNum));
   ws1.autoFilter = { from: { row: ws1HeaderRowNum, column: 1 }, to: { row: ws1HeaderRowNum, column: 3 } };
+
+  ws1.addRow([]);
+  const ws1WorkerTitleRow = ws1.addRow(['노동자 구분별 집계']);
+  ws1WorkerTitleRow.font = { bold: true, size: 12 };
+  const ws1WorkerHeaderRowNum = ws1.rowCount + 1;
+  ws1.getRow(ws1WorkerHeaderRowNum).values = ['노동자 구분', '건수'];
+  (data.workerCounts || []).forEach(w => ws1.addRow([w.worker, w.count]));
+  styleHeaderRow(ws1.getRow(ws1WorkerHeaderRowNum));
+
   autoFitColumns(ws1);
   ws1.views = [{ state: 'frozen', ySplit: ws1HeaderRowNum }];
 
