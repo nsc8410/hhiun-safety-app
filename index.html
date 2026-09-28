@@ -748,11 +748,11 @@ async function renderParticipation(content, filters = null) {
 // ============================================================
 async function renderAggregate(content) {
   const today = new Date().toISOString().slice(0, 10);
-  const monthAgo = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const monthAgo = new Date(Date.now() - 180 * 86400000).toISOString().slice(0, 10);
   content.innerHTML = `
     <div class="card">
       <div style="font-weight:700; font-size:15px;">기간 전체 집계</div>
-      <div style="font-size:12.5px; color:#888; margin-bottom:14px;">기간을 지정하면, 그 기간에 등록된 재해를 재해 유형(사고 형태)별로 건수를 집계합니다. 반복되는 사고 유형을 파악해 예방 대책에 활용하세요.</div>
+      <div style="font-size:12.5px; color:#888; margin-bottom:14px;">기간을 지정하면, 그 기간에 등록된 재해를 재해 유형(사고 형태)별·월별로 집계합니다. 반복되는 사고 유형을 파악해 예방 대책에 활용하세요.</div>
       <div class="row-flex" style="flex-wrap:wrap;">
         <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">시작일</label><input type="date" id="agFrom" value="${monthAgo}" /></div>
         <div><label style="font-size:12px; font-weight:700; display:block; margin-bottom:4px;">종료일</label><input type="date" id="agTo" value="${today}" /></div>
@@ -763,6 +763,19 @@ async function renderAggregate(content) {
       </div>
       <div id="agResult" style="margin-top:18px;"></div>
     </div>`;
+
+  // dateFrom~dateTo 사이의 모든 "YYYY-MM"을 만든다 (해당 월에 재해가 0건이어도 표에 0으로 나오게).
+  function buildMonthRange(dateFrom, dateTo) {
+    const months = [];
+    let [y, m] = dateFrom.split('-').map(Number);
+    const [ey, em] = dateTo.split('-').map(Number);
+    if (!y || !m || !ey || !em) return months;
+    while (y < ey || (y === ey && m <= em)) {
+      months.push(`${y}-${String(m).padStart(2, '0')}`);
+      m++; if (m > 12) { m = 1; y++; }
+    }
+    return months;
+  }
 
   async function runAggregate(dateFrom, dateTo) {
     const events = await readJSON(PATHS.events, []);
@@ -777,8 +790,25 @@ async function renderAggregate(content) {
     });
     const types = Array.from(typeMap.entries()).map(([status, count]) => ({ status, count }))
       .sort((a, b) => b.count - a.count);
+    const typeList = types.map(t => t.status);
+
+    const months = buildMonthRange(dateFrom, dateTo);
+    const monthlyMatrix = months.map(month => {
+      const rowEvents = inRange.filter(e => {
+        const d = e.date || (e.accidentAt ? e.accidentAt.slice(0, 10) : '');
+        return d.slice(0, 7) === month;
+      });
+      const counts = {};
+      typeList.forEach(t => { counts[t] = 0; });
+      rowEvents.forEach(e => {
+        const t = e.accidentType || guessAccidentType(e.content) || '미분류';
+        counts[t] = (counts[t] || 0) + 1;
+      });
+      return { month, counts, total: rowEvents.length };
+    });
+
     return {
-      dateFrom, dateTo, events: inRange, types,
+      dateFrom, dateTo, events: inRange, types, typeList, months, monthlyMatrix,
       total: inRange.length,
       ambCount: inRange.filter(e => e.ambulance === '이용').length
     };
@@ -787,6 +817,7 @@ async function renderAggregate(content) {
   document.getElementById('agRunBtn').onclick = async () => {
     const dateFrom = document.getElementById('agFrom').value;
     const dateTo = document.getElementById('agTo').value;
+    if (!dateFrom || !dateTo) return alert('시작일과 종료일을 선택하세요.');
     const data = await runAggregate(dateFrom, dateTo);
     const max = Math.max(...data.types.map(t => t.count), 1);
     document.getElementById('agResult').innerHTML = `
@@ -796,7 +827,8 @@ async function renderAggregate(content) {
         <div class="box"><b>구급차 이용</b><span>${data.ambCount}건</span></div>
         <div class="box"><b>유형 수</b><span>${data.types.length}종</span></div>
       </div>
-      <div style="margin-top:16px;">
+      <div style="font-weight:700; font-size:13.5px; margin-top:20px; margin-bottom:8px;">유형별 요약</div>
+      <div>
         ${data.types.length === 0 ? '<div class="empty">해당 기간에 등록된 재해가 없습니다.</div>' : data.types.map(t => `
           <div style="margin-bottom:10px;">
             <div class="row-flex" style="justify-content:space-between; font-size:13px; margin-bottom:3px;">
@@ -806,7 +838,17 @@ async function renderAggregate(content) {
               <div style="background:#2f4f8f; border-radius:6px; height:10px; width:${Math.max((t.count / max) * 100, 4)}%;"></div>
             </div>
           </div>`).join('')}
-      </div>`;
+      </div>
+      ${data.typeList.length === 0 ? '' : `
+      <div style="font-weight:700; font-size:13.5px; margin-top:24px; margin-bottom:8px;">월별 × 유형별 집계</div>
+      <div style="overflow-x:auto;">
+        <table style="min-width:100%;">
+          <tr><th>월</th>${data.typeList.map(t => `<th>${esc(t)}</th>`).join('')}<th>합계</th></tr>
+          ${data.monthlyMatrix.map(row => `
+            <tr><td>${row.month}</td>${data.typeList.map(t => `<td style="text-align:center;">${row.counts[t] || 0}</td>`).join('')}<td style="text-align:center; font-weight:700;">${row.total}</td></tr>`).join('')}
+          <tr style="font-weight:700; background:#f7f9fc;"><td>합계</td>${data.typeList.map(t => `<td style="text-align:center;">${data.types.find(x => x.status === t)?.count || 0}</td>`).join('')}<td style="text-align:center;">${data.total}</td></tr>
+        </table>
+      </div>`}`;
     document.getElementById('agExportBtn').onclick = async () => {
       const btn = document.getElementById('agExportBtn');
       btn.disabled = true; btn.textContent = '⏳ 파일 만드는 중...';
@@ -867,9 +909,27 @@ async function exportAggregateExcel(data) {
   autoFitColumns(ws1);
   ws1.views = [{ state: 'frozen', ySplit: ws1HeaderRowNum }];
 
-  // ---------- 2) 재해 상세 목록 ----------
-  const ws2 = wb.addWorksheet('재해 상세 목록');
-  ws2.columns = [
+  // ---------- 2) 월별×유형별 집계 ----------
+  const ws2 = wb.addWorksheet('월별 유형별 집계');
+  ws2.addRow(['월별 × 유형별 재해 집계']);
+  ws2.addRow([`${dotDate(data.dateFrom)} ~ ${dotDate(data.dateTo)}`]);
+  ws2.addRow([]);
+  styleTitleRow(ws2.getRow(1));
+  const ws2HeaderRowNum = 4;
+  ws2.getRow(ws2HeaderRowNum).values = ['월', ...data.typeList, '합계'];
+  (data.monthlyMatrix || []).forEach(row => {
+    ws2.addRow([row.month, ...data.typeList.map(t => row.counts[t] || 0), row.total]);
+  });
+  const ws2TotalRow = ws2.addRow(['합계', ...data.typeList.map(t => (data.types.find(x => x.status === t) || {}).count || 0), data.total]);
+  ws2TotalRow.font = { bold: true };
+  styleHeaderRow(ws2.getRow(ws2HeaderRowNum));
+  ws2.autoFilter = { from: { row: ws2HeaderRowNum, column: 1 }, to: { row: ws2HeaderRowNum, column: 2 + data.typeList.length } };
+  autoFitColumns(ws2);
+  ws2.views = [{ state: 'frozen', xSplit: 1, ySplit: ws2HeaderRowNum }];
+
+  // ---------- 3) 재해 상세 목록 ----------
+  const ws3 = wb.addWorksheet('재해 상세 목록');
+  ws3.columns = [
     { header: '재해 일자 및 시간', key: 'at' }, { header: '재해자', key: 'victim' }, { header: '소속부서', key: 'dept' },
     { header: '노동자 구분', key: 'worker' },
     { header: '재해장소', key: 'place' }, { header: '재해내용', key: 'content' }, { header: '재해 유형', key: 'type' },
@@ -877,18 +937,18 @@ async function exportAggregateExcel(data) {
     { header: '구급차', key: 'amb' }, { header: '병원명', key: 'hospital' },
     { header: '재해자 조사', key: 'vi' }, { header: '현장 조사', key: 'si' }
   ];
-  sortedEvents.forEach(e => ws2.addRow({
+  sortedEvents.forEach(e => ws3.addRow({
     at: fmtAccidentAt(e.accidentAt) || e.date || '', victim: e.victimName || e.name || '', dept: e.department || '',
     worker: (e.workerTypes && e.workerTypes.length) ? e.workerTypes.join(', ') : '',
     place: e.location || '', content: e.content || '', type: e.accidentType || guessAccidentType(e.content) || '미분류',
     status: e.status || '', amb: e.ambulance || '', hospital: e.hospital || '',
     vi: e.victimInvestigation || '', si: e.siteInvestigation || ''
   }));
-  styleHeaderRow(ws2.getRow(1));
-  ws2.autoFilter = { from: 'A1', to: { row: 1, column: ws2.columns.length } };
-  ws2.getColumn('content').alignment = { wrapText: true, vertical: 'top' };
-  autoFitColumns(ws2);
-  ws2.views = [{ state: 'frozen', ySplit: 1 }];
+  styleHeaderRow(ws3.getRow(1));
+  ws3.autoFilter = { from: 'A1', to: { row: 1, column: ws3.columns.length } };
+  ws3.getColumn('content').alignment = { wrapText: true, vertical: 'top' };
+  autoFitColumns(ws3);
+  ws3.views = [{ state: 'frozen', ySplit: 1 }];
 
   const buf = await wb.xlsx.writeBuffer();
   const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
