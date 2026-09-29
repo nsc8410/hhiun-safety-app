@@ -170,14 +170,19 @@ async function readJSON(path, fallback) {
         const json = await res.json();
         return JSON.parse(b64DecodeUnicode(json.content));
       }
+      // 200/404가 아닌 경우(토큰 만료/권한 부족 등) - 원인을 콘솔에 남기고 아래 raw 방식으로 폴백한다.
+      console.error(`readJSON(${path}): GitHub API ${res.status} ${res.statusText}. 토큰이 만료되었거나 저장소 권한이 없을 수 있습니다. raw 방식으로 다시 시도합니다.`);
     } catch (err) {
-      // 실패하면 아래 raw 방식으로 폴백
+      console.error(`readJSON(${path}): GitHub API 요청 실패 (${err.message}). raw 방식으로 다시 시도합니다.`);
     }
   }
   const url = `https://raw.githubusercontent.com/${GH_OWNER}/${GH_REPO}/${GH_BRANCH}/${path}?t=${Date.now()}`;
   try {
     const res = await fetch(url, { cache: 'no-store' });
-    if (!res.ok) return fallback;
+    if (!res.ok) {
+      if (getToken()) console.error(`readJSON(${path}): raw 방식도 ${res.status}로 실패했습니다. 이 저장소는 비공개라, 토큰이 유효하지 않으면 조회 자체가 막힙니다. 사용자 설정에서 토큰을 새로 등록해보세요.`);
+      return fallback;
+    }
     return await res.json();
   } catch (err) {
     return fallback;
