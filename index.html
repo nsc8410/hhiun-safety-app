@@ -327,6 +327,23 @@ document.getElementById('bootBtn').onclick = async () => {
   const msg = document.getElementById('bootMsg');
   if (!token || !empId || !name) { msg.textContent = '모든 항목을 입력하세요.'; return; }
   setToken(token);
+  // 안전장치: 이미 데이터가 있는 저장소인데 실수로 이 화면에 들어온 경우를 막기 위해,
+  // 방금 입력한 토큰으로 먼저 인증 조회를 해보고, 기존 재해 기록이 하나라도 있으면 초기화를 중단한다.
+  msg.style.color = '#c62828';
+  msg.textContent = '기존 데이터 확인 중...';
+  let existingCheckFailed = false;
+  try {
+    const r = await fetch(`${GH_API}/contents/${PATHS.events}`, { headers: { Authorization: `Bearer ${token}` } });
+    if (r.ok) {
+      const j = await r.json();
+      const existingEvents = JSON.parse(decodeURIComponent(escape(atob(j.content))));
+      if (Array.isArray(existingEvents) && existingEvents.length > 0) {
+        msg.textContent = `이미 이 저장소에 등록된 재해 기록이 ${existingEvents.length}건 있습니다. 최초 설정은 완전히 비어있는 저장소에서만 사용하세요. 계속 진행하면 기존 데이터가 모두 사라집니다. (실수라면 아래 "취소하고 로그인 화면으로"를 눌러주세요.)`;
+        if (!confirm(`이미 재해 기록이 ${existingEvents.length}건 저장되어 있습니다. 정말로 전부 지우고 새로 초기화하시겠습니까? 이 동작은 되돌리기 매우 어렵습니다.`)) return;
+      }
+    }
+  } catch (e) { existingCheckFailed = true; }
+  msg.style.color = '#c62828';
   const res = await commitFiles({
     [PATHS.users]: [{ empId, name, password: empId, role: '관리자', status: '사용' }],
     [PATHS.settings]: { rate: 15000 },
