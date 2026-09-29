@@ -58,6 +58,7 @@
     <label>관리자 이름</label><input id="boot_name" style="width:100%;" />
     <div class="notice">초기 비밀번호는 사번과 동일하게 설정됩니다.</div>
     <button class="primary" id="bootBtn" style="width:100%; margin-top:14px;">초기화하고 시작</button>
+    <button class="ghost" id="bootBackBtn" style="width:100%; margin-top:8px;">취소하고 로그인 화면으로</button>
     <div id="bootMsg" style="color:#c62828; font-size:12.5px; margin-top:10px;"></div>
   </div>
 </div>
@@ -85,6 +86,7 @@
         <input id="loginTokenInput" placeholder="github_pat_로 시작하는 토큰" style="width:100%; margin-bottom:8px;" />
         <button class="ghost" id="loginTokenSaveBtn" style="width:100%;">토큰 저장하고 다시 로그인</button>
       </div>
+      <div class="link" id="loginBootToggle" style="font-size:12px; color:#888; margin-top:10px;">이 저장소를 아직 한 번도 설정한 적이 없으신가요? (최초 설정)</div>
     </div>
   </div>
 </div>
@@ -300,6 +302,14 @@ function requireToken() {
 let session = null;
 
 (async function init() {
+  if (!getToken()) {
+    // 토큰이 없으면 비공개 저장소를 읽을 수 없어, 실제로는 데이터가 있어도 없는 것처럼 보인다.
+    // 이 경우 "최초 설정" 화면 대신 로그인 화면(+ 토큰 입력 옵션)을 띄운다.
+    const raw = sessionStorage.getItem('slog_session');
+    if (raw) { session = JSON.parse(raw); enterApp(); }
+    else document.getElementById('loginScreen').style.display = 'flex';
+    return;
+  }
   const users = await readJSON(PATHS.users, null);
   if (users === null) {
     document.getElementById('bootScreen').style.display = 'flex';
@@ -340,6 +350,14 @@ document.getElementById('loginTokenSaveBtn').addEventListener('click', () => {
   setToken(t);
   document.getElementById('loginMsg').style.color = '#2f4f8f';
   document.getElementById('loginMsg').textContent = '토큰이 저장되었습니다. 사번/비밀번호로 다시 로그인해보세요.';
+});
+document.getElementById('loginBootToggle').addEventListener('click', () => {
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('bootScreen').style.display = 'flex';
+});
+document.getElementById('bootBackBtn').addEventListener('click', () => {
+  document.getElementById('bootScreen').style.display = 'none';
+  document.getElementById('loginScreen').style.display = 'flex';
 });
 
 async function doLogin() {
