@@ -381,6 +381,9 @@ async function doLogin() {
 }
 
 function isAdmin() { return !!session && session.role === '관리자'; }
+// 일일재해 등록/수정/삭제는 관리자·일반 구분 없이, 로그인(승인)된 사용자라면 누구나 할 수 있다.
+// (다른 관리 탭들은 여전히 isAdmin()으로 관리자만 접근 가능하도록 별도로 제한됨)
+function canManageEvents() { return !!session; }
 const ADMIN_ONLY_TABS = ['participation', 'aggregate', 'members', 'users'];
 
 function enterApp() {
@@ -447,7 +450,7 @@ async function renderEvents(content, offset = 0, presetEvents = null) {
 
   content.innerHTML = `
     <div style="display:flex; justify-content:flex-end; margin-bottom:10px;">
-      ${isAdmin() ? '<button class="primary" id="addEventBtn">일일재해등록</button>' : ''}
+      ${canManageEvents() ? '<button class="primary" id="addEventBtn">일일재해등록</button>' : ''}
     </div>
     <div class="card">
       <div class="row-flex" style="justify-content:space-between; margin-bottom:14px;">
@@ -466,7 +469,7 @@ async function renderEvents(content, offset = 0, presetEvents = null) {
                 <div style="font-size:12px; color:#888; margin-top:3px;">${fmtAccidentAt(ev.accidentAt) || ev.date || ''}${ev.department ? ' · ' + ev.department : ''}${ev.location ? ' · ' + ev.location : ''} · 등록 ${ev.regName} (${ev.regId})</div>
               </div>
               <div class="row-flex">
-                ${isAdmin() ? `<button class="icon ghost" data-edit="${ev.id}">수정</button><button class="icon danger" data-del="${ev.id}">삭제</button>` : ''}
+                ${canManageEvents() ? `<button class="icon ghost" data-edit="${ev.id}">수정</button><button class="icon danger" data-del="${ev.id}">삭제</button>` : ''}
               </div>
             </div>
           </div>`).join('')}
@@ -479,7 +482,7 @@ async function renderEvents(content, offset = 0, presetEvents = null) {
       </div>` : ''}
     </div>`;
 
-  if (isAdmin()) document.getElementById('addEventBtn').onclick = () => openAddEventModal(content, events);
+  if (canManageEvents()) document.getElementById('addEventBtn').onclick = () => openAddEventModal(content, events);
   content.querySelectorAll('[data-open]').forEach(el => el.addEventListener('click', () => openEventDetail(el.dataset.open, content)));
   content.querySelectorAll('[data-edit]').forEach(el => el.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -699,7 +702,7 @@ async function openEventDetail(id, content) {
     <div style="font-size:12px; color:#888; margin-top:14px;">등록 ${esc(ev.regName)} (${esc(ev.regId)}) · ${ev.regAt ? new Date(ev.regAt).toLocaleString() : ''}${ev.editedAt ? ` · 수정 ${esc(ev.editedBy)} (${new Date(ev.editedAt).toLocaleString()})` : ''}</div>
     <div class="actions">
       <button class="ghost" id="e_close" style="flex:1;">닫기</button>
-      ${isAdmin() ? '<button class="primary" id="e_edit" style="flex:1;">수정</button>' : ''}
+      ${canManageEvents() ? '<button class="primary" id="e_edit" style="flex:1;">수정</button>' : ''}
     </div>`;
   bg.querySelector('#e_close').onclick = () => { bg.remove(); renderEvents(content, 0, events); };
   const editBtn = bg.querySelector('#e_edit');
