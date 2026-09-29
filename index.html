@@ -484,11 +484,11 @@ async function renderEvents(content, offset = 0, presetEvents = null) {
     </div>`;
 
   if (canManageEvents()) document.getElementById('addEventBtn').onclick = () => openAddEventModal(content, events);
-  content.querySelectorAll('[data-open]').forEach(el => el.addEventListener('click', () => openEventDetail(el.dataset.open, content)));
+  content.querySelectorAll('[data-open]').forEach(el => el.addEventListener('click', () => openEventDetail(el.dataset.open, content, false, offset)));
   content.querySelectorAll('[data-edit]').forEach(el => el.addEventListener('click', (e) => {
     e.stopPropagation();
     const ev = events.find(x => x.id === el.dataset.edit);
-    if (ev) openAddEventModal(content, events, ev);
+    if (ev) openAddEventModal(content, events, ev, offset);
   }));
   content.querySelectorAll('[data-view-anon]').forEach(el => el.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -503,7 +503,10 @@ async function renderEvents(content, offset = 0, presetEvents = null) {
     const newEvents = events.filter(e => e.id !== id);
     const res = await commitFiles({ [PATHS.events]: newEvents }, `재해 기록 삭제: ${id}`);
     if (!res.ok) { btn.disabled = false; btn.textContent = '삭제'; return alert('삭제 실패: ' + res.error); }
-    renderEvents(content, 0, newEvents);
+    // 삭제로 페이지 수가 줄어들 수 있으니, 지금 보던 페이지가 더 이상 없으면 마지막 페이지로 보정한다.
+    const newTotalPages = Math.max(1, Math.ceil(newEvents.length / EVENTS_PAGE_SIZE));
+    const safeOffset = Math.min(offset, (newTotalPages - 1) * EVENTS_PAGE_SIZE);
+    renderEvents(content, safeOffset, newEvents);
   }));
   const prevBtn = document.getElementById('prevPageBtn');
   const nextBtn = document.getElementById('nextPageBtn');
@@ -529,7 +532,7 @@ function fmtAccidentAt(v) {
   return t ? `${d} ${t}` : d;
 }
 
-function openAddEventModal(listEl, currentEvents, existingEvent = null) {
+function openAddEventModal(listEl, currentEvents, existingEvent = null, returnOffset = 0) {
   if (!requireToken()) return;
   const isEdit = !!existingEvent;
   const ev = existingEvent || {};
@@ -630,7 +633,7 @@ function openAddEventModal(listEl, currentEvents, existingEvent = null) {
     if (!res.ok) { saveBtn.disabled = false; saveBtn.textContent = '저장'; return alert('저장 실패: ' + res.error); }
     bg.remove();
     // events.json만 바뀌었으므로 attendance/settings는 이미 있던 값을 그대로 재사용 (추가 조회 없음)
-    renderEvents(listEl, 0, updatedEvents);
+    renderEvents(listEl, isEdit ? returnOffset : 0, updatedEvents);
   };
 }
 
@@ -675,7 +678,7 @@ function maskName(name) {
 }
 function nl2br(s) { return esc(s).replace(/\n/g, '<br/>'); }
 
-async function openEventDetail(id, content, anonymize = false) {
+async function openEventDetail(id, content, anonymize = false, returnOffset = 0) {
   const bg = document.createElement('div');
   bg.className = 'modal-bg';
   bg.innerHTML = `<div class="modal wide"><div class="empty">불러오는 중...</div></div>`;
@@ -717,10 +720,10 @@ async function openEventDetail(id, content, anonymize = false) {
       <button class="ghost" id="e_close" style="flex:1;">닫기</button>
       ${(!anonymize && canManageEvents()) ? '<button class="primary" id="e_edit" style="flex:1;">수정</button>' : ''}
     </div>`;
-  bg.querySelector('#e_close').onclick = () => { bg.remove(); renderEvents(content, 0, events); };
-  bg.querySelector('#e_detail_close_x').onclick = () => { bg.remove(); renderEvents(content, 0, events); };
+  bg.querySelector('#e_close').onclick = () => { bg.remove(); renderEvents(content, returnOffset, events); };
+  bg.querySelector('#e_detail_close_x').onclick = () => { bg.remove(); renderEvents(content, returnOffset, events); };
   const editBtn = bg.querySelector('#e_edit');
-  if (editBtn) editBtn.onclick = () => { bg.remove(); openAddEventModal(content, events, ev); };
+  if (editBtn) editBtn.onclick = () => { bg.remove(); openAddEventModal(content, events, ev, returnOffset); };
 }
 
 // ============================================================
