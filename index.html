@@ -469,6 +469,7 @@ async function renderEvents(content, offset = 0, presetEvents = null) {
                 <div style="font-size:12px; color:#888; margin-top:3px;">${fmtAccidentAt(ev.accidentAt) || ev.date || ''}${ev.department ? ' · ' + ev.department : ''}${ev.location ? ' · ' + ev.location : ''} · 등록 ${ev.regName} (${ev.regId})</div>
               </div>
               <div class="row-flex">
+                <button class="icon ghost" data-view-anon="${ev.id}">익명보기</button>
                 ${canManageEvents() ? `<button class="icon ghost" data-edit="${ev.id}">수정</button><button class="icon danger" data-del="${ev.id}">삭제</button>` : ''}
               </div>
             </div>
@@ -488,6 +489,10 @@ async function renderEvents(content, offset = 0, presetEvents = null) {
     e.stopPropagation();
     const ev = events.find(x => x.id === el.dataset.edit);
     if (ev) openAddEventModal(content, events, ev);
+  }));
+  content.querySelectorAll('[data-view-anon]').forEach(el => el.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openEventDetail(el.dataset.viewAnon, content, true);
   }));
   content.querySelectorAll('[data-del]').forEach(el => el.addEventListener('click', async (ev2) => {
     if (!requireToken()) return;
@@ -662,9 +667,15 @@ function guessAccidentType(text) {
 }
 
 function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+// "김철수" -> "김○○" (성만 남기고 이름은 가림). 한 글자 이름은 그대로 둔다.
+function maskName(name) {
+  const s = String(name || '').trim();
+  if (s.length <= 1) return s;
+  return s[0] + '○'.repeat(s.length - 1);
+}
 function nl2br(s) { return esc(s).replace(/\n/g, '<br/>'); }
 
-async function openEventDetail(id, content) {
+async function openEventDetail(id, content, anonymize = false) {
   const bg = document.createElement('div');
   bg.className = 'modal-bg';
   bg.innerHTML = `<div class="modal wide"><div class="empty">불러오는 중...</div></div>`;
@@ -677,9 +688,10 @@ async function openEventDetail(id, content) {
     bg.querySelector('#e_close').onclick = () => bg.remove();
     return;
   }
+  const displayName = anonymize ? maskName(ev.victimName || ev.name) : (ev.victimName || ev.name || '');
   const rows = [
     ['재해 일자 및 시간', fmtAccidentAt(ev.accidentAt) || ev.date || ''],
-    ['재해자 성명', ev.victimName || ev.name || ''],
+    ['재해자 성명', displayName],
     ['소속부서', ev.department || ''],
     ['노동자 구분', (ev.workerTypes && ev.workerTypes.length) ? ev.workerTypes.join(', ') : ''],
     ['재해장소', ev.location || ''],
@@ -689,7 +701,8 @@ async function openEventDetail(id, content) {
     ['병원명', ev.hospital || ''],
   ];
   bg.querySelector('.modal').innerHTML = `
-    <h3 style="margin-top:0;">${esc(ev.victimName || ev.name || '재해 상세')}</h3>
+    <button class="modal-x" id="e_detail_close_x" title="닫기">✕</button>
+    <h3 style="margin-top:0;">${esc(displayName || '재해 상세')}${anonymize ? ' <span style="font-size:11px; font-weight:400; color:#888;">(익명보기)</span>' : ''}</h3>
     <table style="margin-bottom:14px;">
       ${rows.map(([k, v]) => `<tr><th style="width:120px; background:#f7f9fc; color:#333;">${k}</th><td>${esc(v) || '-'}</td></tr>`).join('')}
     </table>
@@ -702,9 +715,10 @@ async function openEventDetail(id, content) {
     <div style="font-size:12px; color:#888; margin-top:14px;">등록 ${esc(ev.regName)} (${esc(ev.regId)}) · ${ev.regAt ? new Date(ev.regAt).toLocaleString() : ''}${ev.editedAt ? ` · 수정 ${esc(ev.editedBy)} (${new Date(ev.editedAt).toLocaleString()})` : ''}</div>
     <div class="actions">
       <button class="ghost" id="e_close" style="flex:1;">닫기</button>
-      ${canManageEvents() ? '<button class="primary" id="e_edit" style="flex:1;">수정</button>' : ''}
+      ${(!anonymize && canManageEvents()) ? '<button class="primary" id="e_edit" style="flex:1;">수정</button>' : ''}
     </div>`;
   bg.querySelector('#e_close').onclick = () => { bg.remove(); renderEvents(content, 0, events); };
+  bg.querySelector('#e_detail_close_x').onclick = () => { bg.remove(); renderEvents(content, 0, events); };
   const editBtn = bg.querySelector('#e_edit');
   if (editBtn) editBtn.onclick = () => { bg.remove(); openAddEventModal(content, events, ev); };
 }
