@@ -157,34 +157,25 @@ function b64DecodeUnicode(b64) {
 }
 
 async function readJSON(path, fallback) {
-  // 토큰(=쓰기 권한)이 있는 사람은 GitHub API로 직접 읽어 지연 없이 항상 최신 상태를 본다.
-  // 토큰 없는 순수 조회자는 raw.githubusercontent.com을 쓰며, 드물게 몇 분 지연될 수 있다.
-  if (getToken()) {
-    try {
-      const res = await fetch(`${GH_API}/contents/${path}?ref=${GH_BRANCH}&_=${Date.now()}`, {
-        headers: { Authorization: `Bearer ${getToken()}`, Accept: 'application/vnd.github+json' },
-        cache: 'no-store'
-      });
-      if (res.status === 404) return fallback;
-      if (res.ok) {
-        const json = await res.json();
-        return JSON.parse(b64DecodeUnicode(json.content));
-      }
-      // 200/404가 아닌 경우(토큰 만료/권한 부족 등) - 원인을 콘솔에 남기고 아래 raw 방식으로 폴백한다.
-      console.error(`readJSON(${path}): GitHub API ${res.status} ${res.statusText}. 토큰이 만료되었거나 저장소 권한이 없을 수 있습니다. raw 방식으로 다시 시도합니다.`);
-    } catch (err) {
-      console.error(`readJSON(${path}): GitHub API 요청 실패 (${err.message}). raw 방식으로 다시 시도합니다.`);
-    }
-  }
+  // GitHub Contents API로 파일 전체를 base64로 받는 방식은 1MB가 넘으면 내용이 잘려서 오는
+  // 문제가 있어(재해 기록이 쌓이며 실제로 발생), 토큰이 있든 없든 raw.githubusercontent.com에서
+  // 파일을 직접 받는 방식으로 통일한다. 비공개 저장소는 토큰을 Authorization 헤더로 실어 보내면
+  // 조회가 가능하다. 캐시를 우회해 항상 최신 내용을 받는다.
+  const token = getToken();
   const url = `https://raw.githubusercontent.com/${GH_OWNER}/${GH_REPO}/${GH_BRANCH}/${path}?t=${Date.now()}`;
   try {
-    const res = await fetch(url, { cache: 'no-store' });
+    const res = await fetch(url, {
+      cache: 'no-store',
+      headers: token ? { Authorization: `token ${token}` } : {}
+    });
+    if (res.status === 404) return fallback;
     if (!res.ok) {
-      if (getToken()) console.error(`readJSON(${path}): raw 방식도 ${res.status}로 실패했습니다. 이 저장소는 비공개라, 토큰이 유효하지 않으면 조회 자체가 막힙니다. 사용자 설정에서 토큰을 새로 등록해보세요.`);
+      console.error(`readJSON(${path}): ${res.status} ${res.statusText}${token ? ' (토큰이 만료되었거나 이 저장소에 대한 권한이 없을 수 있습니다)' : ' (비공개 저장소는 토큰 없이 조회할 수 없습니다)'}`);
       return fallback;
     }
     return await res.json();
   } catch (err) {
+    console.error(`readJSON(${path}): 요청 실패 (${err.message})`);
     return fallback;
   }
 }
@@ -333,21 +324,32 @@ document.getElementById('bootBtn').onclick = async () => {
   if (!token || !empId || !name) { msg.textContent = '모든 항목을 입력하세요.'; return; }
   setToken(token);
   // 안전장치: 이미 데이터가 있는 저장소인데 실수로 이 화면에 들어온 경우를 막기 위해,
-  // 방금 입력한 토큰으로 먼저 인증 조회를 해보고, 기존 재해 기록이 하나라도 있으면 초기화를 중단한다.
+  // 방금 입력한 토큰으로 먼저 조회해보고, 기존 재해 기록이 하나라도 있으면 초기화를 중단한다.
+  // (readJSON과 동일하게 raw.githubusercontent.com + 토큰 방식을 쓴다 — 파일이 1MB가 넘으면
+  //  GitHub Contents API의 base64 응답이 잘려서 안전장치가 무력화될 수 있기 때문)
   msg.style.color = '#c62828';
   msg.textContent = '기존 데이터 확인 중...';
-  let existingCheckFailed = false;
   try {
-    const r = await fetch(`${GH_API}/contents/${PATHS.events}`, { headers: { Authorization: `Bearer ${token}` } });
-    if (r.ok) {
-      const j = await r.json();
-      const existingEvents = JSON.parse(decodeURIComponent(escape(atob(j.content))));
+    const r = await fetch(`https://raw.githubusercontent.com/${GH_OWNER}/${GH_REPO}/${GH_BRANCH}/${PATHS.events}?t=${Date.now()}`, {
+      cache: 'no-store', headers: { Authorization: `token ${token}` }
+    });
+    if (r.status !== 404) {
+      if (!r.ok) {
+        msg.textContent = `기존 데이터 확인에 실패했습니다 (${r.status}). 안전을 위해 초기화를 중단합니다. 토큰 권한을 확인하거나, 정말 빈 저장소가 맞다면 다시 시도해주세요.`;
+        return;
+      }
+      const existingEvents = await r.json();
       if (Array.isArray(existingEvents) && existingEvents.length > 0) {
-        msg.textContent = `이미 이 저장소에 등록된 재해 기록이 ${existingEvents.length}건 있습니다. 최초 설정은 완전히 비어있는 저장소에서만 사용하세요. 계속 진행하면 기존 데이터가 모두 사라집니다. (실수라면 아래 "취소하고 로그인 화면으로"를 눌러주세요.)`;
-        if (!confirm(`이미 재해 기록이 ${existingEvents.length}건 저장되어 있습니다. 정말로 전부 지우고 새로 초기화하시겠습니까? 이 동작은 되돌리기 매우 어렵습니다.`)) return;
+        if (!confirm(`이미 재해 기록이 ${existingEvents.length}건 저장되어 있습니다. 정말로 전부 지우고 새로 초기화하시겠습니까? 이 동작은 되돌리기 매우 어렵습니다.`)) {
+          msg.textContent = '초기화를 취소했습니다.';
+          return;
+        }
       }
     }
-  } catch (e) { existingCheckFailed = true; }
+  } catch (e) {
+    msg.textContent = `기존 데이터 확인 중 오류가 발생했습니다 (${e.message}). 안전을 위해 초기화를 중단합니다.`;
+    return;
+  }
   msg.style.color = '#c62828';
   const res = await commitFiles({
     [PATHS.users]: [{ empId, name, password: empId, role: '관리자', status: '사용' }],
