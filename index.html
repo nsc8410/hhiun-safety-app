@@ -157,25 +157,34 @@ function b64DecodeUnicode(b64) {
 }
 
 async function readJSON(path, fallback) {
-  // GitHub Contents API로 파일 전체를 base64로 받는 방식은 1MB가 넘으면 내용이 잘려서 오는
-  // 문제가 있어(재해 기록이 쌓이며 실제로 발생), 토큰이 있든 없든 raw.githubusercontent.com에서
-  // 파일을 직접 받는 방식으로 통일한다. 비공개 저장소는 토큰을 Authorization 헤더로 실어 보내면
-  // 조회가 가능하다. 캐시를 우회해 항상 최신 내용을 받는다.
+  // GitHub Contents API를 기본 방식(JSON+base64)으로 쓰면 파일이 1MB를 넘을 때 내용이 잘리는
+  // 문제가 있다. 같은 api.github.com 엔드포인트에 Accept 헤더만 "raw"로 바꿔 요청하면 GitHub가
+  // 파일 내용을 그대로(텍스트) 돌려주고, 이 방식은 크기 제한이 훨씬 크다(최대 100MB).
+  // 이 앱은 쓰기(commitFiles)에서 이미 api.github.com + 토큰 조합을 써왔으므로 CORS 문제도 없다.
   const token = getToken();
+  if (token) {
+    try {
+      const res = await fetch(`${GH_API}/contents/${path}?ref=${GH_BRANCH}&_=${Date.now()}`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github.raw' },
+        cache: 'no-store'
+      });
+      if (res.status === 404) return fallback;
+      if (res.ok) return JSON.parse(await res.text());
+      console.error(`readJSON(${path}): GitHub API ${res.status} ${res.statusText}. 토큰이 만료되었거나 이 저장소에 대한 권한이 없을 수 있습니다. 공개 조회 방식으로 다시 시도합니다.`);
+    } catch (err) {
+      console.error(`readJSON(${path}): GitHub API 요청 실패 (${err.message}). 공개 조회 방식으로 다시 시도합니다.`);
+    }
+  }
+  // 토큰이 없거나 위 방식이 실패한 경우: 공개 조회용 raw 방식(비공개 저장소에는 통하지 않는다).
   const url = `https://raw.githubusercontent.com/${GH_OWNER}/${GH_REPO}/${GH_BRANCH}/${path}?t=${Date.now()}`;
   try {
-    const res = await fetch(url, {
-      cache: 'no-store',
-      headers: token ? { Authorization: `token ${token}` } : {}
-    });
-    if (res.status === 404) return fallback;
+    const res = await fetch(url, { cache: 'no-store' });
     if (!res.ok) {
-      console.error(`readJSON(${path}): ${res.status} ${res.statusText}${token ? ' (토큰이 만료되었거나 이 저장소에 대한 권한이 없을 수 있습니다)' : ' (비공개 저장소는 토큰 없이 조회할 수 없습니다)'}`);
+      if (token) console.error(`readJSON(${path}): 공개 조회 방식도 ${res.status}로 실패했습니다. 이 저장소는 비공개라, 토큰이 유효하지 않으면 조회 자체가 막힙니다.`);
       return fallback;
     }
     return await res.json();
   } catch (err) {
-    console.error(`readJSON(${path}): 요청 실패 (${err.message})`);
     return fallback;
   }
 }
@@ -325,20 +334,20 @@ document.getElementById('bootBtn').onclick = async () => {
   setToken(token);
   // 안전장치: 이미 데이터가 있는 저장소인데 실수로 이 화면에 들어온 경우를 막기 위해,
   // 방금 입력한 토큰으로 먼저 조회해보고, 기존 재해 기록이 하나라도 있으면 초기화를 중단한다.
-  // (readJSON과 동일하게 raw.githubusercontent.com + 토큰 방식을 쓴다 — 파일이 1MB가 넘으면
-  //  GitHub Contents API의 base64 응답이 잘려서 안전장치가 무력화될 수 있기 때문)
+  // (readJSON과 동일하게 api.github.com + Accept:raw 방식을 쓴다 — 이 조합은 파일 크기 제한이
+  //  거의 없고, 이 앱이 쓰기에서 이미 쓰고 있는 검증된 경로라 CORS 문제도 없다)
   msg.style.color = '#c62828';
   msg.textContent = '기존 데이터 확인 중...';
   try {
-    const r = await fetch(`https://raw.githubusercontent.com/${GH_OWNER}/${GH_REPO}/${GH_BRANCH}/${PATHS.events}?t=${Date.now()}`, {
-      cache: 'no-store', headers: { Authorization: `token ${token}` }
+    const r = await fetch(`${GH_API}/contents/${PATHS.events}?ref=${GH_BRANCH}&_=${Date.now()}`, {
+      cache: 'no-store', headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github.raw' }
     });
     if (r.status !== 404) {
       if (!r.ok) {
         msg.textContent = `기존 데이터 확인에 실패했습니다 (${r.status}). 안전을 위해 초기화를 중단합니다. 토큰 권한을 확인하거나, 정말 빈 저장소가 맞다면 다시 시도해주세요.`;
         return;
       }
-      const existingEvents = await r.json();
+      const existingEvents = JSON.parse(await r.text());
       if (Array.isArray(existingEvents) && existingEvents.length > 0) {
         if (!confirm(`이미 재해 기록이 ${existingEvents.length}건 저장되어 있습니다. 정말로 전부 지우고 새로 초기화하시겠습니까? 이 동작은 되돌리기 매우 어렵습니다.`)) {
           msg.textContent = '초기화를 취소했습니다.';
