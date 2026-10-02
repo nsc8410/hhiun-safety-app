@@ -575,6 +575,8 @@ function openAddEventModal(listEl, currentEvents, existingEvent = null, returnOf
   const pad = n => String(n).padStart(2, '0');
   const nowLocal = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
   const workerTypesSet = new Set(ev.workerTypes || []);
+  // 기존 재해 유형이 목록(ACCIDENT_TYPES)에 없는 값이면, 과거에 "미분류"를 직접 입력해 저장한 경우다.
+  const isCustomType = !!ev.accidentType && !ACCIDENT_TYPES.includes(ev.accidentType);
   bg.innerHTML = `
     <div class="modal wide">
       <button class="modal-x" id="e_close_x" title="닫기">✕</button>
@@ -595,8 +597,9 @@ function openAddEventModal(listEl, currentEvents, existingEvent = null, returnOf
       <textarea id="e_content" rows="4" placeholder="재해 발생 경위를 입력하세요.">${esc(ev.content || '')}</textarea>
       <label>재해 유형(사고 형태)</label>
       <select id="e_type">
-        ${ACCIDENT_TYPES.map(t => `<option value="${t}" ${(ev.accidentType || '') === t ? 'selected' : ''}>${t}</option>`).join('')}
+        ${ACCIDENT_TYPES.map(t => `<option value="${t}" ${(isCustomType ? '미분류' : (ev.accidentType || '')) === t ? 'selected' : ''}>${t}</option>`).join('')}
       </select>
+      <input id="e_type_custom" placeholder="재해 유형을 직접 입력하세요." value="${isCustomType ? esc(ev.accidentType) : ''}" style="margin-top:8px; display:${isCustomType ? 'block' : 'none'};" />
       <label>재해자 상태</label>
       <input id="e_status" placeholder="예: 경상(현장조치 후 정상근무)" value="${esc(ev.status || '')}" />
       <label>구급차 이용여부</label>
@@ -628,8 +631,14 @@ function openAddEventModal(listEl, currentEvents, existingEvent = null, returnOf
     const guess = guessAccidentType(contentInput.value);
     if (guess) bg.querySelector('#e_type').value = guess;
   });
-  bg.querySelector('#e_type').addEventListener('change', function () { this.dataset.touched = '1'; });
-  if (isEdit) bg.querySelector('#e_type').dataset.touched = '1'; // 기존 값이 있으면 자동추정으로 덮어쓰지 않음
+  const typeSelect = bg.querySelector('#e_type');
+  const typeCustomInput = bg.querySelector('#e_type_custom');
+  typeSelect.addEventListener('change', function () {
+    this.dataset.touched = '1';
+    typeCustomInput.style.display = this.value === '미분류' ? 'block' : 'none';
+    if (this.value === '미분류') typeCustomInput.focus();
+  });
+  if (isEdit) typeSelect.dataset.touched = '1'; // 기존 값이 있으면 자동추정으로 덮어쓰지 않음
 
   bg.querySelector('#e_cancel').onclick = () => bg.remove();
   bg.querySelector('#e_close_x').onclick = () => bg.remove();
@@ -642,7 +651,9 @@ function openAddEventModal(listEl, currentEvents, existingEvent = null, returnOf
     const workerTypes = Array.from(bg.querySelectorAll('.e_worker:checked')).map(el => el.value);
     const location = bg.querySelector('#e_place').value.trim();
     const contentText = bg.querySelector('#e_content').value.trim();
-    const accidentType = bg.querySelector('#e_type').value;
+    const accidentType = typeSelect.value === '미분류'
+      ? (typeCustomInput.value.trim() || '미분류')
+      : typeSelect.value;
     const status = bg.querySelector('#e_status').value;
     const ambulance = ambUse.checked ? '이용' : '미이용';
     const hospital = bg.querySelector('#e_hospital').value.trim();
