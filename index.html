@@ -6,6 +6,7 @@
 <title>노동안전보건실 일일재해 집계</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/3.0.0/tesseract.min.js"></script>
 <style>
   * { box-sizing: border-box; }
   body { font-family:-apple-system,'Malgun Gothic',sans-serif; margin:0; background:#eef1f6; color:#1a1a1a; }
@@ -113,6 +114,7 @@
     <div id="pageDesc" style="color:#888; font-size:13px; margin-bottom:16px;"></div>
     <div class="row-flex" style="margin-bottom:16px; flex-wrap:wrap;">
       <button class="tabbtn ghost" data-tab="events">일일재해</button>
+      <button class="tabbtn ghost" data-tab="stops">작업중지</button>
       <button class="tabbtn ghost" data-tab="participation">재해별 현황</button>
       <button class="tabbtn ghost" data-tab="aggregate">유형별 재해 집계</button>
       <button class="tabbtn ghost" data-tab="members">일일재해업로드</button>
@@ -251,6 +253,42 @@ async function commitFiles(filesObj, message, retries = 6) {
   const paths = Object.keys(filesObj);
   if (paths.length === 1) return commitSingleFile(paths[0], filesObj[paths[0]], message, retries);
   return commitFilesAtomic(filesObj, message, retries);
+}
+
+// 이미 base64로 인코딩된 바이너리(사진 등)를 그대로 올린다. (JSON.stringify 하지 않음)
+async function commitBinaryFile(path, base64Content, message, retries = 4) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      let sha;
+      try {
+        const cur = await ghFetch(`/contents/${path}?ref=${GH_BRANCH}&_=${Date.now()}`);
+        sha = cur.sha;
+      } catch (e) { sha = undefined; }
+      const body = { message, content: base64Content, branch: GH_BRANCH };
+      if (sha) body.sha = sha;
+      await ghFetch(`/contents/${path}`, { method: 'PUT', body: JSON.stringify(body) });
+      return { ok: true };
+    } catch (err) {
+      lastErr = err;
+      if (attempt === retries - 1) break;
+      await new Promise(r => setTimeout(r, 400 * (attempt + 1) + Math.random() * 200));
+    }
+  }
+  return { ok: false, error: friendlyCommitError_(lastErr) };
+}
+
+// 사진 파일을 data: URL로 받아온다 (화면 표시용). 작은 파일이라 기본(JSON+base64) 방식 그대로 써도 된다.
+async function fetchPhotoDataUrl(path, mime = 'image/jpeg') {
+  const token = getToken();
+  try {
+    const res = await fetch(`${GH_API}/contents/${path}?ref=${GH_BRANCH}&_=${Date.now()}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {}, cache: 'no-store'
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return `data:${mime};base64,${(json.content || '').replace(/\n/g, '')}`;
+  } catch (e) { return null; }
 }
 
 async function commitSingleFile(path, data, message, retries = 6) {
@@ -416,6 +454,7 @@ document.getElementById('bootBtn').onclick = async () => {
     [PATHS.users]: [{ empId, name, password: empId, role: '관리자', status: '사용' }],
     [PATHS.settings]: { rate: 15000 },
     [PATHS.eventsIndex]: [],
+    [STOPS_INDEX_PATH]: [],
     [PATHS.attendance]: [],
     [PATHS.members]: []
   }, '초기 설정: 관리자 계정 생성');
@@ -496,6 +535,7 @@ document.querySelectorAll('.tabbtn').forEach(b => b.addEventListener('click', ()
 
 const TAB_META = {
   events: ['일일재해', '일일재해는 반드시 본인이 직접 작성합니다.'],
+  stops: ['작업중지', '작업중지 현황을 사진과 함께 기록합니다. 사진 속 작업중지 번호를 자동으로 인식합니다.'],
   participation: ['재해별 현황', '조건을 지정해 등록된 재해를 검색하고 상세 내용을 확인합니다.'],
   aggregate: ['유형별 재해 집계', '기간을 지정해 재해 유형(사고 형태)별 발생 건수를 집계합니다.'],
   members: ['일일재해업로드', '과거 재해 이력이 정리된 엑셀 파일을 올리면 자동으로 일일재해 목록에 등록합니다.'],
@@ -511,6 +551,7 @@ function goTab(tab) {
   const content = document.getElementById('content');
   content.innerHTML = '<div class="card"><div class="empty">불러오는 중...</div></div>';
   if (tab === 'events') renderEvents(content);
+  if (tab === 'stops') renderStops(content);
   if (tab === 'participation') renderParticipation(content);
   if (tab === 'aggregate') renderAggregate(content);
   if (tab === 'members') renderMembers(content);
@@ -839,6 +880,315 @@ async function openEventDetail(id, content, anonymize = false, returnOffset = 0)
   bg.querySelector('#e_detail_close_x').onclick = () => { bg.remove(); renderEvents(content, returnOffset, events); };
   const editBtn = bg.querySelector('#e_edit');
   if (editBtn) editBtn.onclick = () => { bg.remove(); openAddEventModal(content, events, ev, returnOffset); };
+}
+
+// ============================================================
+// 작업중지 (사진 첨부 + 사진 속 작업중지 번호 자동 인식)
+// ============================================================
+const STOPS_DIR = 'data/stops';
+const STOPS_INDEX_PATH = `${STOPS_DIR}/index.json`;
+function stopMonthPath(ym) { return `${STOPS_DIR}/${ym}.json`; }
+function stopPhotoPath(stopId, idx) { return `${STOPS_DIR}/photos/${stopId}-${idx}.jpg`; }
+function monthOfStop(s) { return String((s && (s.date || s.stoppedAt)) || '').slice(0, 7); }
+
+async function loadStopsIndex() { return readJSON(STOPS_INDEX_PATH, []); }
+async function loadStopsByMonths(months) {
+  const uniq = Array.from(new Set((months || []).filter(Boolean)));
+  if (uniq.length === 0) return [];
+  const lists = await Promise.all(uniq.map(ym => readJSON(stopMonthPath(ym), [])));
+  return lists.flat();
+}
+async function loadAllStops() { return loadStopsByMonths(await loadStopsIndex()); }
+
+// 사진을 가로 최대 1280px, JPEG 품질 0.75 정도로 줄인다. 저장 용량을 크게 아껴서
+// 저장소가 금방 무거워지는 걸 막는다. dataUrl(미리보기/인식용)과 base64(업로드용)를 같이 돌려준다.
+function compressImageFile(file, maxWidth = 1280, quality = 0.75) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('파일을 읽지 못했습니다.'));
+    reader.onload = () => {
+      img.onerror = () => reject(new Error('이미지를 열지 못했습니다.'));
+      img.onload = () => {
+        const scale = Math.min(1, maxWidth / img.width);
+        const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL('image/jpeg', quality);
+        resolve({ dataUrl, base64: dataUrl.split(',')[1] });
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// 사진에서 글자를 읽어서(Tesseract.js) "작업중지 번호"로 보이는 숫자를 하나 추려낸다.
+// 완벽하게 정확하지 않을 수 있어 등록자가 직접 확인/수정하도록 입력칸은 항상 편집 가능하게 둔다.
+async function ocrExtractStopNumber(dataUrl) {
+  const { data } = await Tesseract.recognize(dataUrl, 'kor+eng');
+  const text = (data && data.text || '').trim();
+  // "제 2026-123 호", "2026-123", "No.123", 순수 숫자 등 다양한 표기를 폭넓게 잡는다.
+  const m = text.match(/(\d{1,4}[-–]\d{1,5})/) || text.match(/(\d{3,8})/);
+  return { text, guess: m ? m[1] : '' };
+}
+
+async function renderStops(content, offset = 0, presetStops = null) {
+  const STOPS_PAGE_SIZE = 20;
+  const stops = presetStops || await loadAllStops();
+  stops.sort((a, b) => String(b.stoppedAt || b.date || '').localeCompare(String(a.stoppedAt || a.date || '')) || String(b.id).localeCompare(String(a.id)));
+  const totalPages = Math.max(1, Math.ceil(stops.length / STOPS_PAGE_SIZE));
+  const curPage = Math.floor(offset / STOPS_PAGE_SIZE);
+  const page = stops.slice(offset, offset + STOPS_PAGE_SIZE);
+  const pageNumbers = [];
+  for (let p = 0; p < totalPages; p++) pageNumbers.push(p);
+
+  content.innerHTML = `
+    <div style="display:flex; justify-content:flex-end; margin-bottom:10px;">
+      ${canManageEvents() ? '<button class="primary" id="addStopBtn">작업중지등록</button>' : ''}
+    </div>
+    <div class="card">
+      <div style="font-weight:700; font-size:15px; margin-bottom:14px;">작업중지 목록</div>
+      <div id="stopList">${page.length === 0 ? '<div class="empty">등록된 작업중지가 없습니다.</div>' :
+        page.map(s => `
+          <div style="padding:14px 0; border-top:1px solid #edf0f4;">
+            <div class="row-flex" style="justify-content:space-between; align-items:flex-start;">
+              <div>
+                <div class="row-flex" style="gap:8px;">
+                  <div class="link" style="font-weight:700; font-size:14.5px;" data-open="${s.id}">${esc(s.stopNumber ? `작업중지 제${s.stopNumber}호` : '(번호 미입력)')}</div>
+                  ${(s.photos && s.photos.length) ? `<span class="badge full">사진 ${s.photos.length}장</span>` : ''}
+                </div>
+                <div style="font-size:12px; color:#888; margin-top:3px;">${fmtAccidentAt(s.stoppedAt) || s.date || ''}${s.location ? ' · ' + esc(s.location) : ''} · 등록 ${esc(s.regName)} (${esc(s.regId)})</div>
+              </div>
+              <div class="row-flex">
+                ${canManageEvents() ? `<button class="icon ghost" data-edit="${s.id}">수정</button><button class="icon danger" data-del="${s.id}">삭제</button>` : ''}
+              </div>
+            </div>
+          </div>`).join('')}
+      </div>
+      ${totalPages > 1 ? `
+      <div class="row-flex" style="justify-content:center; margin-top:16px; flex-wrap:wrap;">
+        <button class="ghost icon" id="prevPageBtn" ${curPage === 0 ? 'disabled' : ''}>이전</button>
+        ${pageNumbers.map(p => `<button class="icon ${p === curPage ? 'primary' : 'ghost'}" data-page="${p}">${p + 1}</button>`).join('')}
+        <button class="ghost icon" id="nextPageBtn" ${curPage === totalPages - 1 ? 'disabled' : ''}>다음</button>
+      </div>` : ''}
+    </div>`;
+
+  if (canManageEvents()) document.getElementById('addStopBtn').onclick = () => openAddStopModal(content, stops);
+  content.querySelectorAll('[data-open]').forEach(el => el.addEventListener('click', () => openStopDetail(el.dataset.open, content, offset)));
+  content.querySelectorAll('[data-edit]').forEach(el => el.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const s = stops.find(x => x.id === el.dataset.edit);
+    if (s) openAddStopModal(content, stops, s, offset);
+  }));
+  content.querySelectorAll('[data-del]').forEach(el => el.addEventListener('click', async (ev2) => {
+    if (!requireToken()) return;
+    if (!confirm('이 작업중지 기록을 삭제할까요? (첨부된 사진 파일은 저장소에 남습니다)')) return;
+    const btn = ev2.currentTarget;
+    btn.disabled = true; btn.textContent = '삭제 중...';
+    const id = el.dataset.del;
+    const target = stops.find(s => s.id === id);
+    const newStops = stops.filter(s => s.id !== id);
+    let res = { ok: true };
+    if (target) {
+      const ym = monthOfStop(target);
+      res = await commitFiles({ [stopMonthPath(ym)]: newStops.filter(s => monthOfStop(s) === ym) }, `작업중지 기록 삭제: ${id}`);
+    }
+    if (!res.ok) { btn.disabled = false; btn.textContent = '삭제'; return alert('삭제 실패: ' + res.error); }
+    const newTotalPages = Math.max(1, Math.ceil(newStops.length / STOPS_PAGE_SIZE));
+    const safeOffset = Math.min(offset, (newTotalPages - 1) * STOPS_PAGE_SIZE);
+    renderStops(content, safeOffset, newStops);
+  }));
+  const prevBtn = document.getElementById('prevPageBtn');
+  const nextBtn = document.getElementById('nextPageBtn');
+  if (prevBtn) prevBtn.onclick = () => renderStops(content, (curPage - 1) * STOPS_PAGE_SIZE, stops);
+  if (nextBtn) nextBtn.onclick = () => renderStops(content, (curPage + 1) * STOPS_PAGE_SIZE, stops);
+  content.querySelectorAll('[data-page]').forEach(el => el.addEventListener('click', () =>
+    renderStops(content, Number(el.dataset.page) * STOPS_PAGE_SIZE, stops)));
+}
+
+function openAddStopModal(listEl, currentStops, existingStop = null, returnOffset = 0) {
+  if (!requireToken()) return;
+  const isEdit = !!existingStop;
+  const s = existingStop || {};
+  const bg = document.createElement('div');
+  bg.className = 'modal-bg';
+  const now = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const nowLocal = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  bg.innerHTML = `
+    <div class="modal wide">
+      <button class="modal-x" id="s_close_x" title="닫기">✕</button>
+      <h3 style="margin-top:0;">${isEdit ? '작업중지 수정' : '작업중지등록'}</h3>
+      <label>작업중지 일시</label>
+      <input id="s_at" type="datetime-local" value="${s.stoppedAt || nowLocal}" />
+      <label>장소</label>
+      <input id="s_place" placeholder="예: 3공장 도장라인" value="${esc(s.location || '')}" />
+      <label>사진 (현장 사진을 올리면 작업중지 번호를 자동으로 읽어봅니다)</label>
+      <input type="file" id="s_photo_input" accept="image/*" capture="environment" multiple style="display:none" />
+      <button class="ghost" id="s_photo_btn" style="width:100%;">📷 사진 선택/촬영</button>
+      <div id="s_photo_preview" style="display:flex; flex-wrap:wrap; gap:8px; margin-top:10px;"></div>
+      <div id="s_ocr_status" style="font-size:12px; color:#888; margin-top:6px;"></div>
+      <label>작업중지 번호</label>
+      <input id="s_number" placeholder="예: 2026-012 (사진에서 자동 인식되면 채워집니다)" value="${esc(s.stopNumber || '')}" />
+      <label>내용</label>
+      <textarea id="s_content" rows="3" placeholder="작업중지 사유/경위를 입력하세요.">${esc(s.content || '')}</textarea>
+      <div class="actions">
+        <button class="ghost" id="s_cancel">취소</button>
+        <button class="primary" id="s_save">저장</button>
+      </div>
+    </div>`;
+  document.body.appendChild(bg);
+
+  // 이미 저장된(수정 화면) 사진들 + 이번에 새로 추가한 사진들을 함께 관리한다.
+  const existingPhotos = (s.photos || []).map((path, i) => ({ kind: 'existing', path, label: `기존 사진 ${i + 1}` }));
+  const newPhotos = []; // { kind:'new', base64, dataUrl, name }
+  let ocrDone = false;
+
+  function renderPreview() {
+    const box = bg.querySelector('#s_photo_preview');
+    const all = [...existingPhotos, ...newPhotos];
+    const BLANK_PX = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBTAA7';
+    box.innerHTML = all.map((p, i) => `
+      <div style="position:relative;">
+        <img src="${p.dataUrl || BLANK_PX}" data-photo-idx="${i}" style="width:72px; height:72px; object-fit:cover; border-radius:8px; border:1px solid #d5d9e0; background:#f2f4f7;" />
+        <div style="font-size:9px; text-align:center; color:#888;">${p.kind === 'existing' ? '기존' : '새 사진'}</div>
+      </div>`).join('');
+    // 기존 사진은 미리보기 썸네일이 당장 없으므로(원격 파일), 비동기로 받아와 채운다.
+    existingPhotos.forEach(async (p, i) => {
+      if (p.dataUrl) return;
+      const url = await fetchPhotoDataUrl(p.path);
+      p.dataUrl = url || '';
+      const imgEl = box.querySelector(`img[data-photo-idx="${i}"]`);
+      if (imgEl && url) imgEl.src = url;
+    });
+  }
+  renderPreview();
+
+  bg.querySelector('#s_photo_btn').onclick = () => bg.querySelector('#s_photo_input').click();
+  bg.querySelector('#s_photo_input').addEventListener('change', async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    const statusEl = bg.querySelector('#s_ocr_status');
+    statusEl.textContent = '사진 처리 중...';
+    for (const file of files) {
+      try {
+        const { dataUrl, base64 } = await compressImageFile(file);
+        newPhotos.push({ kind: 'new', dataUrl, base64, name: file.name });
+      } catch (err) { /* 개별 파일 실패는 건너뛴다 */ }
+    }
+    renderPreview();
+    e.target.value = '';
+
+    // 번호 입력칸이 비어 있을 때만, 방금 추가한 첫 사진으로 자동 인식을 시도한다.
+    const numberInput = bg.querySelector('#s_number');
+    if (!ocrDone && !numberInput.value.trim() && newPhotos.length > 0) {
+      ocrDone = true;
+      statusEl.textContent = '🔎 사진에서 작업중지 번호 인식 중... (처음 한 번은 몇 초 걸릴 수 있어요)';
+      try {
+        const { guess, text } = await ocrExtractStopNumber(newPhotos[0].dataUrl);
+        if (guess) {
+          numberInput.value = guess;
+          statusEl.textContent = `자동 인식: "${guess}" (사진이 흐리면 틀릴 수 있으니 확인해주세요)`;
+        } else {
+          statusEl.textContent = text ? `번호 패턴을 찾지 못했습니다. 인식된 글자: "${text.slice(0, 40)}${text.length > 40 ? '...' : ''}" — 직접 입력해주세요.` : '사진에서 글자를 인식하지 못했습니다. 직접 입력해주세요.';
+        }
+      } catch (err) {
+        statusEl.textContent = '자동 인식에 실패했습니다. 번호를 직접 입력해주세요.';
+      }
+    } else {
+      statusEl.textContent = `사진 ${newPhotos.length + existingPhotos.length}장 준비됨.`;
+    }
+  });
+
+  bg.querySelector('#s_cancel').onclick = () => bg.remove();
+  bg.querySelector('#s_close_x').onclick = () => bg.remove();
+  bg.querySelector('#s_save').onclick = async () => {
+    const stoppedAt = bg.querySelector('#s_at').value;
+    if (!stoppedAt) return alert('작업중지 일시를 선택하세요.');
+    const location = bg.querySelector('#s_place').value.trim();
+    const stopNumber = bg.querySelector('#s_number').value.trim();
+    const contentText = bg.querySelector('#s_content').value.trim();
+    const saveBtn = bg.querySelector('#s_save');
+    saveBtn.disabled = true; saveBtn.textContent = '저장 중...';
+
+    const stopId = isEdit ? s.id : genId('ST');
+    // 새로 추가된 사진들을 저장소에 올린다 (기존 사진 번호 뒤부터 이어서).
+    const photoPaths = existingPhotos.map(p => p.path);
+    for (let i = 0; i < newPhotos.length; i++) {
+      const path = stopPhotoPath(stopId, photoPaths.length + i);
+      const upRes = await commitBinaryFile(path, newPhotos[i].base64, `작업중지 사진 업로드: ${stopId}`);
+      if (!upRes.ok) { saveBtn.disabled = false; saveBtn.textContent = '저장'; return alert('사진 업로드 실패: ' + upRes.error); }
+      photoPaths.push(path);
+    }
+
+    const savedStop = {
+      id: stopId, stoppedAt, date: stoppedAt.slice(0, 10),
+      location, stopNumber, content: contentText, photos: photoPaths,
+      regId: isEdit ? s.regId : session.empId,
+      regName: isEdit ? s.regName : session.name,
+      regAt: isEdit ? s.regAt : new Date().toISOString(),
+      ...(isEdit ? { editedBy: session.name, editedAt: new Date().toISOString() } : {})
+    };
+    const updatedStops = isEdit ? currentStops.map(x => x.id === s.id ? savedStop : x) : [...currentStops, savedStop];
+
+    const newYm = monthOfStop(savedStop);
+    const oldYm = isEdit ? monthOfStop(s) : null;
+    const filesToWrite = { [stopMonthPath(newYm)]: updatedStops.filter(x => monthOfStop(x) === newYm) };
+    if (isEdit && oldYm && oldYm !== newYm) {
+      filesToWrite[stopMonthPath(oldYm)] = updatedStops.filter(x => monthOfStop(x) === oldYm);
+    }
+    const indexArr = await loadStopsIndex();
+    if (!indexArr.includes(newYm)) filesToWrite[STOPS_INDEX_PATH] = Array.from(new Set([...indexArr, newYm])).sort();
+
+    const res = await commitFiles(filesToWrite, isEdit ? `작업중지 기록 수정: ${stopId}` : `작업중지등록: ${stopId}`);
+    if (!res.ok) { saveBtn.disabled = false; saveBtn.textContent = '저장'; return alert('저장 실패: ' + res.error); }
+    bg.remove();
+    renderStops(listEl, isEdit ? returnOffset : 0, updatedStops);
+  };
+}
+
+async function openStopDetail(id, content, returnOffset = 0) {
+  const bg = document.createElement('div');
+  bg.className = 'modal-bg';
+  bg.innerHTML = `<div class="modal wide"><div class="empty">불러오는 중...</div></div>`;
+  document.body.appendChild(bg);
+  const stops = await loadAllStops();
+  const s = stops.find(x => x.id === id);
+  if (!s) {
+    bg.querySelector('.modal').innerHTML = `<div class="empty">해당 기록을 찾을 수 없습니다.</div>
+      <div class="actions"><button class="ghost" id="s_close" style="flex:1;">닫기</button></div>`;
+    bg.querySelector('#s_close').onclick = () => bg.remove();
+    return;
+  }
+  bg.querySelector('.modal').innerHTML = `
+    <button class="modal-x" id="s_detail_close_x" title="닫기">✕</button>
+    <h3 style="margin-top:0;">${s.stopNumber ? `작업중지 제${esc(s.stopNumber)}호` : '작업중지 상세'}</h3>
+    <table style="margin-bottom:14px;">
+      <tr><th style="width:120px; background:#f7f9fc; color:#333;">작업중지 일시</th><td>${fmtAccidentAt(s.stoppedAt) || s.date || '-'}</td></tr>
+      <tr><th style="background:#f7f9fc; color:#333;">장소</th><td>${esc(s.location) || '-'}</td></tr>
+      <tr><th style="background:#f7f9fc; color:#333;">작업중지 번호</th><td>${esc(s.stopNumber) || '-'}</td></tr>
+    </table>
+    <label>내용</label>
+    <div class="notice">${nl2br(s.content) || '-'}</div>
+    <label>사진</label>
+    <div id="s_detail_photos" style="display:flex; flex-wrap:wrap; gap:8px; margin-top:6px;">
+      ${(s.photos && s.photos.length) ? s.photos.map((p, i) => `<img data-photo-path="${esc(p)}" style="width:120px; height:120px; object-fit:cover; border-radius:8px; border:1px solid #d5d9e0; background:#f2f4f7;" />`).join('') : '<div class="empty">첨부된 사진이 없습니다.</div>'}
+    </div>
+    <div style="font-size:12px; color:#888; margin-top:14px;">등록 ${esc(s.regName)} (${esc(s.regId)}) · ${s.regAt ? new Date(s.regAt).toLocaleString() : ''}${s.editedAt ? ` · 수정 ${esc(s.editedBy)} (${new Date(s.editedAt).toLocaleString()})` : ''}</div>
+    <div class="actions">
+      <button class="ghost" id="s_close" style="flex:1;">닫기</button>
+      ${canManageEvents() ? '<button class="primary" id="s_edit" style="flex:1;">수정</button>' : ''}
+    </div>`;
+  bg.querySelectorAll('[data-photo-path]').forEach(async (imgEl) => {
+    const url = await fetchPhotoDataUrl(imgEl.dataset.photoPath);
+    if (url) imgEl.src = url;
+  });
+  bg.querySelector('#s_close').onclick = () => { bg.remove(); renderStops(content, returnOffset, stops); };
+  bg.querySelector('#s_detail_close_x').onclick = () => { bg.remove(); renderStops(content, returnOffset, stops); };
+  const editBtn = bg.querySelector('#s_edit');
+  if (editBtn) editBtn.onclick = () => { bg.remove(); openAddStopModal(content, stops, s, returnOffset); };
 }
 
 // ============================================================
